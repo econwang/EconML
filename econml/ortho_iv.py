@@ -16,14 +16,16 @@ https://arxiv.org/abs/1905.10176
 import numpy as np
 from sklearn.base import clone
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import FunctionTransformer
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer
 
 from ._ortho_learner import _OrthoLearner
-from .dml import _FinalWrapper
-from .utilities import (hstack, StatsModelsLinearRegression, inverse_onehot, add_intercept)
-from .inference import StatsModelsInference
 from .cate_estimator import StatsModelsCateEstimatorMixin
+from .dml import _FinalWrapper
+from .inference import StatsModelsInference
+from .sklearn_extensions.linear_model import StatsModelsLinearRegression
+from .utilities import (_deprecate_positional, add_intercept, fit_with_groups, filter_none_kwargs,
+                        hstack, inverse_onehot)
 
 
 # A cut-down version of the DML first stage wrapper, since we don't need to support linear first stages
@@ -52,7 +54,7 @@ class _FirstStageWrapper:
         else:
             return hstack(arrs)
 
-    def fit(self, *, X, W, Target, Z=None, sample_weight=None):
+    def fit(self, *, X, W, Target, Z=None, sample_weight=None, groups=None):
         if self._discrete_target:
             # In this case, the Target is the one-hot-encoding of the treatment variable
             # We need to go back to the label representation of the one-hot so as to call
@@ -63,9 +65,11 @@ class _FirstStageWrapper:
             Target = inverse_onehot(Target)
 
         if sample_weight is not None:
-            self._model.fit(self._combine(X, W, Z, Target.shape[0]), Target, sample_weight=sample_weight)
+            fit_with_groups(self._model, self._combine(X, W, Z, Target.shape[0]), Target,
+                            groups=groups, sample_weight=sample_weight)
         else:
-            self._model.fit(self._combine(X, W, Z, Target.shape[0]), Target)
+            fit_with_groups(self._model, self._combine(X, W, Z, Target.shape[0]), Target,
+                            groups=groups)
 
     def score(self, *, X, W, Target, Z=None, sample_weight=None):
         if hasattr(self._model, 'score'):
@@ -142,7 +146,9 @@ class _BaseDMLATEIV(_OrthoLearner):
                          categories=categories,
                          n_splits=n_splits, random_state=random_state)
 
-    def fit(self, Y, T, Z, W=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("W and Z should be passed by keyword only. In a future release "
+                           "we will disallow passing W and Z by position.", ['W', 'Z'])
+    def fit(self, Y, T, Z, W=None, *, sample_weight=None, sample_var=None, groups=None, inference=None):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -160,6 +166,10 @@ class _BaseDMLATEIV(_OrthoLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string,:class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of:class:`.BootstrapInference`).
@@ -170,7 +180,8 @@ class _BaseDMLATEIV(_OrthoLearner):
         """
         # Replacing fit from _OrthoLearner, to enforce W=None and improve the docstring
         return super().fit(Y, T, W=W, Z=Z,
-                           sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
     def score(self, Y, T, Z, W=None):
         """
@@ -208,11 +219,11 @@ class _DMLATEIVModelNuisance:
         self._model_T_W = clone(model_T_W, safe=False)
         self._model_Z_W = clone(model_Z_W, safe=False)
 
-    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
+    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None, groups=None):
         assert X is None, "DML ATE IV does not accept features"
-        self._model_Y_W.fit(X=X, W=W, Target=Y, sample_weight=sample_weight)
-        self._model_T_W.fit(X=X, W=W, Target=T, sample_weight=sample_weight)
-        self._model_Z_W.fit(X=X, W=W, Target=Z, sample_weight=sample_weight)
+        self._model_Y_W.fit(X=X, W=W, Target=Y, sample_weight=sample_weight, groups=groups)
+        self._model_T_W.fit(X=X, W=W, Target=T, sample_weight=sample_weight, groups=groups)
+        self._model_Z_W.fit(X=X, W=W, Target=Z, sample_weight=sample_weight, groups=groups)
         return self
 
     def score(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
@@ -281,11 +292,11 @@ class _ProjectedDMLATEIVModelNuisance:
         self._model_T_W = clone(model_T_W, safe=False)
         self._model_T_WZ = clone(model_T_WZ, safe=False)
 
-    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
+    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None, groups=None):
         assert X is None, "DML ATE IV does not accept features"
-        self._model_Y_W.fit(X=X, W=W, Target=Y, sample_weight=sample_weight)
-        self._model_T_W.fit(X=X, W=W, Target=T, sample_weight=sample_weight)
-        self._model_T_WZ.fit(X=X, W=W, Z=Z, Target=T, sample_weight=sample_weight)
+        self._model_Y_W.fit(X=X, W=W, Target=Y, sample_weight=sample_weight, groups=groups)
+        self._model_T_W.fit(X=X, W=W, Target=T, sample_weight=sample_weight, groups=groups)
+        self._model_T_WZ.fit(X=X, W=W, Z=Z, Target=T, sample_weight=sample_weight, groups=groups)
         return self
 
     def score(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
@@ -347,12 +358,12 @@ class _BaseDMLIVModelNuisance:
         self._model_T_X = clone(model_T_X, safe=False)
         self._model_T_XZ = clone(model_T_XZ, safe=False)
 
-    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
+    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None, groups=None):
         # TODO: would it be useful to extend to handle controls ala vanilla DML?
         assert W is None, "DML IV does not accept controls"
-        self._model_Y_X.fit(X=X, W=None, Target=Y, sample_weight=sample_weight)
-        self._model_T_X.fit(X=X, W=None, Target=T, sample_weight=sample_weight)
-        self._model_T_XZ.fit(X=X, W=None, Z=Z, Target=T, sample_weight=sample_weight)
+        self._model_Y_X.fit(X=X, W=None, Target=Y, sample_weight=sample_weight, groups=groups)
+        self._model_T_X.fit(X=X, W=None, Target=T, sample_weight=sample_weight, groups=groups)
+        self._model_T_XZ.fit(X=X, W=None, Z=Z, Target=T, sample_weight=sample_weight, groups=groups)
         return self
 
     def score(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
@@ -499,7 +510,9 @@ class _BaseDMLIV(_OrthoLearner):
                          categories=categories,
                          n_splits=n_splits, random_state=random_state)
 
-    def fit(self, Y, T, Z, X=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("Z and X should be passed by keyword only. In a future release "
+                           "we will disallow passing Z and X by position.", ['X', 'Z'])
+    def fit(self, Y, T, Z, X=None, *, sample_weight=None, sample_var=None, groups=None, inference=None):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -517,6 +530,10 @@ class _BaseDMLIV(_OrthoLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string,:class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of:class:`.BootstrapInference`).
@@ -527,7 +544,8 @@ class _BaseDMLIV(_OrthoLearner):
         """
         # Replacing fit from _OrthoLearner, to enforce W=None and improve the docstring
         return super().fit(Y, T, X=X, Z=Z,
-                           sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
     def score(self, Y, T, Z, X=None):
         """
@@ -734,6 +752,12 @@ class DMLIV(_BaseDMLIV):
     categories: 'auto' or list, default 'auto'
         The categories to use when encoding discrete treatments (or 'auto' to use the unique sorted values).
         The first category will be treated as the control treatment.
+
+    random_state: int, :class:`~numpy.random.mtrand.RandomState` instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If :class:`~numpy.random.mtrand.RandomState` instance, random_state is the random number generator;
+        If None, the random number generator is the :class:`~numpy.random.mtrand.RandomState` instance used
+        by :mod:`np.random<numpy.random>`.
     """
 
     def __init__(self, model_Y_X, model_T_X, model_T_XZ, model_final, featurizer=None,
@@ -824,11 +848,18 @@ class NonParamDMLIV(_BaseDMLIV):
         The categories to use when encoding discrete treatments (or 'auto' to use the unique sorted values).
         The first category will be treated as the control treatment.
 
+    random_state: int, :class:`~numpy.random.mtrand.RandomState` instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If :class:`~numpy.random.mtrand.RandomState` instance, random_state is the random number generator;
+        If None, the random number generator is the :class:`~numpy.random.mtrand.RandomState` instance used
+        by :mod:`np.random<numpy.random>`.
+
     """
 
     def __init__(self, model_Y_X, model_T_X, model_T_XZ, model_final,
                  featurizer=None, fit_cate_intercept=True,
-                 n_splits=2, discrete_instrument=False, discrete_treatment=False, categories='auto'):
+                 n_splits=2, discrete_instrument=False, discrete_treatment=False, categories='auto',
+                 random_state=None):
         super().__init__(_FirstStageWrapper(model_Y_X, False),
                          _FirstStageWrapper(model_T_X, discrete_treatment),
                          _FirstStageWrapper(model_T_XZ, discrete_treatment),
@@ -839,7 +870,8 @@ class NonParamDMLIV(_BaseDMLIV):
                          n_splits=n_splits,
                          discrete_instrument=discrete_instrument,
                          discrete_treatment=discrete_treatment,
-                         categories=categories)
+                         categories=categories,
+                         random_state=random_state)
 
 
 class _BaseDRIVModelFinal:
@@ -915,12 +947,12 @@ class _BaseDRIVModelFinal:
 
         if (X is not None) and (self._featurizer is not None):
             X = self._featurizer.fit_transform(X)
-        # TODO: how do we incorporate the sample_weight and sample_var passed into this method
-        #       as arguments?
-        if self._opt_reweighted:
-            self._model_final.fit(X, theta_dr, sample_weight=clipped_cov.ravel()**2)
-        else:
-            self._model_final.fit(X, theta_dr)
+        if self._opt_reweighted and (sample_weight is not None):
+            sample_weight = sample_weight * clipped_cov.ravel()**2
+        elif self._opt_reweighted:
+            sample_weight = clipped_cov.ravel()**2
+        self._model_final.fit(X, theta_dr, **filter_none_kwargs(sample_weight=sample_weight, sample_var=sample_var))
+
         return self
 
     def predict(self, X=None):
@@ -929,22 +961,18 @@ class _BaseDRIVModelFinal:
         return self._model_final.predict(X).reshape((-1,) + self.d_y + self.d_t)
 
     def score(self, Y, T, X=None, W=None, Z=None, nuisances=None, sample_weight=None, sample_var=None):
-        # TODO: is there a good way to incorporate the other nuisance terms in the score?
-        _, T_res, Y_res, _, _ = nuisances
+        theta_dr, clipped_cov = self._effect_estimate(nuisances)
 
-        if Y_res.ndim == 1:
-            Y_res = Y_res.reshape((-1, 1))
-        if T_res.ndim == 1:
-            T_res = T_res.reshape((-1, 1))
         if (X is not None) and (self._featurizer is not None):
             X = self._featurizer.transform(X)
-        effects = self._model_final.predict(X).reshape((-1, Y_res.shape[1], T_res.shape[1]))
-        Y_res_pred = np.einsum('ijk,ik->ij', effects, T_res).reshape(Y_res.shape)
 
-        if sample_weight is not None:
-            return np.mean(np.average((Y_res - Y_res_pred)**2, weights=sample_weight, axis=0))
-        else:
-            return np.mean((Y_res - Y_res_pred) ** 2)
+        if self._opt_reweighted and (sample_weight is not None):
+            sample_weight = sample_weight * clipped_cov.ravel()**2
+        elif self._opt_reweighted:
+            sample_weight = clipped_cov.ravel()**2
+
+        return np.average((theta_dr.ravel() - self._model_final.predict(X).ravel())**2,
+                          weights=sample_weight, axis=0)
 
 
 class _BaseDRIV(_OrthoLearner):
@@ -1037,7 +1065,9 @@ class _BaseDRIV(_OrthoLearner):
                          discrete_instrument=discrete_instrument, discrete_treatment=discrete_treatment,
                          categories=categories, n_splits=n_splits, random_state=random_state)
 
-    def fit(self, Y, T, Z, X=None, W=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X, W, and Z should be passed by keyword only. In a future release "
+                           "we will disallow passing X, W, and Z by position.", ['X', 'W', 'Z'])
+    def fit(self, Y, T, Z, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference=None):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -1057,6 +1087,10 @@ class _BaseDRIV(_OrthoLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string,:class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of:class:`.BootstrapInference`).
@@ -1067,9 +1101,10 @@ class _BaseDRIV(_OrthoLearner):
         """
         # Replacing fit from _OrthoLearner, to reorder arguments and improve the docstring
         return super().fit(Y, T, X=X, W=W, Z=Z,
-                           sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
-    def score(self, Y, T, Z, X=None, W=None):
+    def score(self, Y, T, Z, X=None, W=None, sample_weight=None):
         """
         Score the fitted CATE model on a new data set. Generates nuisance parameters
         for the new data set based on the fitted nuisance models created at fit time.
@@ -1091,6 +1126,8 @@ class _BaseDRIV(_OrthoLearner):
             Features for each sample
         W: optional(n, d_w) matrix or None (Default=None)
             Controls for each sample
+        sample_weight: optional(n,) vector or None (Default=None)
+            Weights for each samples
 
         Returns
         -------
@@ -1099,7 +1136,7 @@ class _BaseDRIV(_OrthoLearner):
             type of the model_final.score method.
         """
         # Replacing score from _OrthoLearner, to reorder arguments and improve the docstring
-        return super().score(Y, T, X=X, W=W, Z=Z)
+        return super().score(Y, T, X=X, W=W, Z=Z, sample_weight=sample_weight)
 
     @property
     def original_featurizer(self):
@@ -1152,12 +1189,13 @@ class _IntentToTreatDRIVModelNuisance:
         self._model_T_XZ = clone(model_T_XZ, safe=False)
         self._prel_model_effect = clone(prel_model_effect, safe=False)
 
-    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
-        self._model_Y_X.fit(X=X, W=W, Target=Y, sample_weight=sample_weight)
-        self._model_T_XZ.fit(X=X, W=W, Z=Z, Target=T, sample_weight=sample_weight)
+    def fit(self, Y, T, X=None, W=None, Z=None, sample_weight=None, groups=None):
+        self._model_Y_X.fit(X=X, W=W, Target=Y, sample_weight=sample_weight, groups=groups)
+        self._model_T_XZ.fit(X=X, W=W, Z=Z, Target=T, sample_weight=sample_weight, groups=groups)
         # we need to undo the one-hot encoding for calling effect,
         # since it expects raw values
-        self._prel_model_effect.fit(Y, inverse_onehot(T), inverse_onehot(Z), X=X)
+        self._prel_model_effect.fit(Y, inverse_onehot(T), Z=inverse_onehot(Z), X=X, W=W,
+                                    sample_weight=sample_weight, groups=groups)
         return self
 
     def score(self, Y, T, X=None, W=None, Z=None, sample_weight=None):
@@ -1172,7 +1210,8 @@ class _IntentToTreatDRIVModelNuisance:
         if hasattr(self._prel_model_effect, 'score'):
             # we need to undo the one-hot encoding for calling effect,
             # since it expects raw values
-            effect_score = self._prel_model_effect.score(Y, inverse_onehot(T), inverse_onehot(Z), X=X)
+            effect_score = self._prel_model_effect.score(Y, inverse_onehot(T),
+                                                         Z=inverse_onehot(Z), X=X, W=W, sample_weight=sample_weight)
         else:
             effect_score = None
 
@@ -1206,7 +1245,8 @@ class _IntentToTreatDRIV(_BaseDRIV):
                  cov_clip=.1,
                  n_splits=3,
                  opt_reweighted=False,
-                 categories='auto'):
+                 categories='auto',
+                 random_state=None):
         """
         """
 
@@ -1219,7 +1259,8 @@ class _IntentToTreatDRIV(_BaseDRIV):
                          n_splits=n_splits,
                          discrete_instrument=True, discrete_treatment=True,
                          categories=categories,
-                         opt_reweighted=opt_reweighted)
+                         opt_reweighted=opt_reweighted,
+                         random_state=random_state)
 
 
 class _DummyCATE:
@@ -1230,7 +1271,7 @@ class _DummyCATE:
     def __init__(self):
         return
 
-    def fit(self, y, T, Z, X):
+    def fit(self, y, T, *, Z, X, W=None, sample_weight=None, groups=None):
         return self
 
     def effect(self, X):
@@ -1296,6 +1337,12 @@ class IntentToTreatDRIV(_IntentToTreatDRIV):
     categories: 'auto' or list, default 'auto'
         The categories to use when encoding discrete treatments (or 'auto' to use the unique sorted values).
         The first category will be treated as the control treatment.
+
+    random_state: int, :class:`~numpy.random.mtrand.RandomState` instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If :class:`~numpy.random.mtrand.RandomState` instance, random_state is the random number generator;
+        If None, the random number generator is the :class:`~numpy.random.mtrand.RandomState` instance used
+        by :mod:`np.random<numpy.random>`.
     """
 
     def __init__(self, model_Y_X, model_T_XZ,
@@ -1306,14 +1353,17 @@ class IntentToTreatDRIV(_IntentToTreatDRIV):
                  cov_clip=.1,
                  n_splits=3,
                  opt_reweighted=False,
-                 categories='auto'):
+                 categories='auto',
+                 random_state=None):
         model_Y_X = _FirstStageWrapper(model_Y_X, discrete_target=False)
         model_T_XZ = _FirstStageWrapper(model_T_XZ, discrete_target=True)
         prel_model_effect = _IntentToTreatDRIV(model_Y_X,
                                                model_T_XZ,
                                                _DummyCATE(),
                                                flexible_model_effect,
-                                               cov_clip=1e-7, n_splits=1, opt_reweighted=True)
+                                               cov_clip=1e-7, n_splits=1,
+                                               opt_reweighted=True,
+                                               random_state=random_state)
         if final_model_effect is None:
             final_model_effect = flexible_model_effect
         super().__init__(model_Y_X, model_T_XZ, prel_model_effect,
@@ -1323,7 +1373,8 @@ class IntentToTreatDRIV(_IntentToTreatDRIV):
                          cov_clip=cov_clip,
                          n_splits=n_splits,
                          opt_reweighted=opt_reweighted,
-                         categories=categories)
+                         categories=categories,
+                         random_state=random_state)
 
     @property
     def models_Y_X(self):
@@ -1389,18 +1440,15 @@ class LinearIntentToTreatDRIV(StatsModelsCateEstimatorMixin, IntentToTreatDRIV):
         Unless an iterable is used, we call `split(concat[W, X], T)` to generate the splits. If all
         W, X are None, then we call `split(ones((T.shape[0], 1)), T)`.
 
-    opt_reweighted : bool, optional, default False
-        Whether to reweight the samples to minimize variance. If True then
-        final_model_effect.fit must accept sample_weight as a kw argument (WeightWrapper from
-        utilities can be used for any linear model to enable sample_weights). If True then
-        assumes the final_model_effect is flexible enough to fit the true CATE model. Otherwise,
-        it method will return a biased projection to the model_effect space, biased
-        to give more weight on parts of the feature space where the instrument is strong.
-
     categories: 'auto' or list, default 'auto'
         The categories to use when encoding discrete treatments (or 'auto' to use the unique sorted values).
         The first category will be treated as the control treatment.
 
+    random_state: int, :class:`~numpy.random.mtrand.RandomState` instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If :class:`~numpy.random.mtrand.RandomState` instance, random_state is the random number generator;
+        If None, the random number generator is the :class:`~numpy.random.mtrand.RandomState` instance used
+        by :mod:`np.random<numpy.random>`.
     """
 
     def __init__(self, model_Y_X, model_T_XZ,
@@ -1409,18 +1457,20 @@ class LinearIntentToTreatDRIV(StatsModelsCateEstimatorMixin, IntentToTreatDRIV):
                  fit_cate_intercept=True,
                  cov_clip=.1,
                  n_splits=3,
-                 opt_reweighted=False,
-                 categories='auto'):
+                 categories='auto',
+                 random_state=None):
         super().__init__(model_Y_X, model_T_XZ,
                          flexible_model_effect=flexible_model_effect,
                          featurizer=featurizer,
                          fit_cate_intercept=fit_cate_intercept,
                          final_model_effect=StatsModelsLinearRegression(fit_intercept=False),
-                         cov_clip=cov_clip, n_splits=n_splits, opt_reweighted=opt_reweighted,
-                         categories=categories)
+                         cov_clip=cov_clip, n_splits=n_splits, opt_reweighted=False,
+                         categories=categories, random_state=random_state)
 
     # override only so that we can update the docstring to indicate support for `StatsModelsInference`
-    def fit(self, Y, T, Z, X=None, W=None, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X, W, and Z should be passed by keyword only. In a future release "
+                           "we will disallow passing X, W, and Z by position.", ['X', 'W', 'Z'])
+    def fit(self, Y, T, Z, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -1440,6 +1490,10 @@ class LinearIntentToTreatDRIV(StatsModelsCateEstimatorMixin, IntentToTreatDRIV):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string,:class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of:class:`.BootstrapInference`) and 'statsmodels'
@@ -1449,4 +1503,6 @@ class LinearIntentToTreatDRIV(StatsModelsCateEstimatorMixin, IntentToTreatDRIV):
         -------
         self : instance
         """
-        return super().fit(Y, T, Z, X=X, W=W, sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+        return super().fit(Y, T, Z=Z, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)

@@ -12,12 +12,11 @@ from collections import defaultdict, Counter
 from sklearn import clone
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.linear_model import LassoCV, MultiTaskLassoCV, Lasso, MultiTaskLasso
-from functools import reduce
+from functools import reduce, wraps
 from sklearn.utils import check_array, check_X_y
-from statsmodels.tools.tools import add_constant
 import warnings
 from warnings import warn
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold, GroupKFold
 from collections.abc import Iterable
 from sklearn.utils.multiclass import type_of_target
 import numbers
@@ -25,6 +24,7 @@ from statsmodels.iolib.table import SimpleTable
 from statsmodels.iolib.summary import summary_return
 from statsmodels.compat.python import lmap
 import copy
+from inspect import signature
 
 MAX_RAND_SEED = np.iinfo(np.int32).max
 
@@ -510,6 +510,40 @@ def check_inputs(Y, T, X, W=None, multi_output_T=True, multi_output_Y=True):
     return Y, T, X, W
 
 
+def check_input_arrays(*args, validate_len=True):
+    """Cast input sequences into numpy arrays.
+
+    Only inputs that are sequence-like will be converted, all other inputs will be left as is.
+    When `validate_len` is True, the sequences will be checked for equal length.
+
+    Parameters
+    ----------
+    args : scalar or array_like
+        Inputs to be checked.
+
+    validate_len : bool (default=True)
+        Whether to check if the input arrays have the same length.
+
+    Returns
+    -------
+    args: array-like
+        List of inputs where sequence-like objects have been cast to numpy arrays.
+
+    """
+    args = [check_array(arg, dtype=None, ensure_2d=False, accept_sparse=True)
+            if np.ndim(arg) > 0 else arg for arg in args]
+    if validate_len:
+        n = None
+        for arg in args:
+            if np.ndim(arg) > 0:
+                m = arg.shape[0]
+                if n is None:
+                    n = m
+                else:
+                    assert (m == n), "Input arrays have incompatible lengths: {} and {}".format(n, m)
+    return args
+
+
 def check_models(models, n):
     """
     Input validation for metalearner models.
@@ -731,6 +765,82 @@ def einsum_sparse(subscripts, *arrs):
                   [arrs[indMap[c][0][0]].shape[indMap[c][0][1]] for c in outputs])
 
 
+def fit_with_groups(model, X, y, groups=None, **kwargs):
+    """
+    Fit a model while correctly handling grouping if necessary.
+
+    This enables us to perform an inner-loop cross-validation of a model
+    which handles grouping correctly, which is not easy using typical sklearn models.
+
+    For example, GridSearchCV and RandomSearchCV both support passing 'groups' to fit,
+    but other CV-related estimators (such as those derived from LinearModelCV, including LassoCV),
+    do not support passing groups to fit which meanst that GroupKFold cannot be used as the cv instance
+    when using these types, because the required 'groups' argument will never be passed to the
+    GroupKFold's split method.  See also https://github.com/scikit-learn/scikit-learn/issues/12052
+
+    The (hacky) workaround that is used here is to explicitly set the 'cv' attribute (if there is one) to
+    the exact set of rows and not to use GroupKFold even with the sklearn classes that could support it;
+    this should work with classes derived from BaseSearchCV, LinearModelCV, and CalibratedClassifierCV.
+
+    Parameters
+    ----------
+    model : estimator
+        The model to fit
+    X : array-like
+        The features to fit against
+    y : array-like
+        The target to fit against
+    groups : array-like, optional
+        The set of groupings that should be kept together when splitting rows for
+        cross-validation
+    kwargs : dict
+        Any other named arguments to pass to the model's fit
+    """
+
+    if groups is not None:
+        # assume that we should perform nested cross-validation if and only if
+        # the model has a 'cv' attribute; this is a somewhat brittle assumption...
+        if hasattr(model, 'cv'):
+            old_cv = model.cv
+            # logic copied from check_cv
+            cv = 5 if old_cv is None else old_cv
+            if isinstance(cv, numbers.Integral):
+                cv = GroupKFold(cv)
+            # otherwise we will assume the user already set the cv attribute to something
+            # compatible with splitting with a 'groups' argument
+
+            # now we have to compute the folds explicitly because some classifiers (like LassoCV)
+            # don't use the groups when calling split internally
+            splits = list(cv.split(X, y, groups=groups))
+            try:
+                model.cv = splits
+                return model.fit(X, y, **kwargs)
+            finally:
+                model.cv = old_cv
+
+    return model.fit(X, y, **kwargs)
+
+
+def filter_none_kwargs(**kwargs):
+    """
+    Filters out any keyword arguments that are None.
+
+    This is useful when specific optional keyword arguments might not be universally supported,
+    so that stripping them out when they are not set enables more uses to succeed.
+
+    Parameters
+    ----------
+    kwargs: dict
+        The keyword arguments to filter
+
+    Returns
+    -------
+    filtered_kwargs: dict
+        The input dictionary, but with all entries having value None removed
+    """
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
 class WeightedModelWrapper:
     """Helper class for assiging weights to models without this option.
 
@@ -875,379 +985,6 @@ def _safe_norm_ppf(q, loc=0, scale=1):
     else:
         prelim = loc
     return prelim
-
-
-class StatsModelsLinearRegression(BaseEstimator):
-    """
-    Class which mimics weighted linear regression from the statsmodels package.
-
-    However, unlike statsmodels WLS, this class also supports sample variances in addition to sample weights,
-    which enables more accurate inference when working with summarized data.
-
-    Parameters
-    ----------
-    fit_intercept : bool (optional, default=True)
-        Whether to fit an intercept in this model
-    fit_args : dict (optional, default=`{}`)
-        The statsmodels-style fit arguments; keys can include 'cov_type'
-    """
-
-    def __init__(self, fit_intercept=True, cov_type=None):
-        self.cov_type = cov_type
-        self.fit_intercept = fit_intercept
-        return
-
-    def _check_input(self, X, y, sample_weight, sample_var):
-        """Check dimensions and other assertions."""
-        if sample_weight is None:
-            sample_weight = np.ones(y.shape[0])
-        elif np.any(np.not_equal(np.mod(sample_weight, 1), 0)):
-            raise AttributeError("Sample weights must all be integers for inference to be valid!")
-
-        if sample_var is None:
-            if np.any(np.not_equal(sample_weight, 1)):
-                warnings.warn(
-                    "No variance information was given for samples with sample_weight not equal to 1, "
-                    "that represent summaries of multiple original samples. Inference will be invalid!")
-            sample_var = np.zeros(y.shape)
-
-        if sample_var.ndim < 2:
-            if np.any(np.equal(sample_weight, 1) & np.not_equal(sample_var, 0)):
-                warnings.warn(
-                    "Variance was set to non-zero for an observation with sample_weight=1! "
-                    "sample_var represents the variance of the original observations that are "
-                    "summarized in this sample. Hence, cannot have a non-zero variance if only "
-                    "one observations was summarized. Inference will be invalid!")
-        else:
-            if np.any(np.equal(sample_weight, 1) & np.not_equal(np.sum(sample_var, axis=1), 0)):
-                warnings.warn(
-                    "Variance was set to non-zero for an observation with sample_weight=1! "
-                    "sample_var represents the variance of the original observations that are "
-                    "summarized in this sample. Hence, cannot have a non-zero variance if only "
-                    "one observations was summarized. Inference will be invalid!")
-
-        if X is None:
-            X = np.empty((y.shape[0], 0))
-
-        assert (X.shape[0] == y.shape[0] ==
-                sample_weight.shape[0] == sample_var.shape[0]), "Input lengths not compatible!"
-        if y.ndim >= 2:
-            assert (y.ndim == sample_var.ndim and
-                    y.shape[1] == sample_var.shape[1]), "Input shapes not compatible: {}, {}!".format(
-                y.shape, sample_var.shape)
-
-        return X, y, sample_weight, sample_var
-
-    def fit(self, X, y, sample_weight=None, sample_var=None):
-        """
-        Fits the model.
-
-        Parameters
-        ----------
-        X : (N, d) nd array like
-            co-variates
-        y : {(N,), (N, p)} nd array like
-            output variable(s)
-        sample_weight : (N,) nd array like of integers
-            Weight for the observation. Observation i is treated as the mean
-            outcome of sample_weight[i] independent observations
-        sample_var : {(N,), (N, p)} nd array like
-            Variance of the outcome(s) of the original sample_weight[i] observations
-            that were used to compute the mean outcome represented by observation i.
-
-        Returns
-        -------
-        self : StatsModelsLinearRegression
-        """
-        # TODO: Add other types of covariance estimation (e.g. Newey-West (HAC), HC2, HC3)
-        X, y, sample_weight, sample_var = self._check_input(X, y, sample_weight, sample_var)
-
-        if self.fit_intercept:
-            X = add_constant(X, has_constant='add')
-        WX = X * np.sqrt(sample_weight).reshape(-1, 1)
-
-        if y.ndim < 2:
-            self._n_out = 0
-            wy = y * np.sqrt(sample_weight)
-        else:
-            self._n_out = y.shape[1]
-            wy = y * np.sqrt(sample_weight).reshape(-1, 1)
-
-        param, _, rank, _ = np.linalg.lstsq(WX, wy, rcond=None)
-
-        if rank < param.shape[0]:
-            warnings.warn("Co-variance matrix is undertermined. Inference will be invalid!")
-
-        sigma_inv = np.linalg.pinv(np.matmul(WX.T, WX))
-        self._param = param
-        var_i = sample_var + (y - np.matmul(X, param))**2
-        n_obs = np.sum(sample_weight)
-        df = len(param) if self._n_out == 0 else param.shape[0]
-
-        if n_obs <= df:
-            warnings.warn("Number of observations <= than number of parameters. Using biased variance calculation!")
-            correction = 1
-        else:
-            correction = (n_obs / (n_obs - df))
-
-        if (self.cov_type is None) or (self.cov_type == 'nonrobust'):
-            if y.ndim < 2:
-                self._var = correction * np.average(var_i, weights=sample_weight) * sigma_inv
-            else:
-                vars = correction * np.average(var_i, weights=sample_weight, axis=0)
-                self._var = [v * sigma_inv for v in vars]
-        elif (self.cov_type == 'HC0'):
-            if y.ndim < 2:
-                weighted_sigma = np.matmul(WX.T, WX * var_i.reshape(-1, 1))
-                self._var = np.matmul(sigma_inv, np.matmul(weighted_sigma, sigma_inv))
-            else:
-                self._var = []
-                for j in range(self._n_out):
-                    weighted_sigma = np.matmul(WX.T, WX * var_i[:, [j]])
-                    self._var.append(np.matmul(sigma_inv, np.matmul(weighted_sigma, sigma_inv)))
-        elif (self.cov_type == 'HC1'):
-            if y.ndim < 2:
-                weighted_sigma = np.matmul(WX.T, WX * var_i.reshape(-1, 1))
-                self._var = correction * np.matmul(sigma_inv, np.matmul(weighted_sigma, sigma_inv))
-            else:
-                self._var = []
-                for j in range(self._n_out):
-                    weighted_sigma = np.matmul(WX.T, WX * var_i[:, [j]])
-                    self._var.append(correction * np.matmul(sigma_inv, np.matmul(weighted_sigma, sigma_inv)))
-        else:
-            raise AttributeError("Unsupported cov_type. Must be one of nonrobust, HC0, HC1.")
-        return self
-
-    def predict(self, X):
-        """
-        Predicts the output given an array of instances.
-
-        Parameters
-        ----------
-        X : (n, d) array like
-            The covariates on which to predict
-
-        Returns
-        -------
-        predictions : {(n,) array, (n,p) array}
-            The predicted mean outcomes
-        """
-        if X is None:
-            X = np.empty((1, 0))
-        if self.fit_intercept:
-            X = add_constant(X, has_constant='add')
-        return np.matmul(X, self._param)
-
-    @property
-    def coef_(self):
-        """
-        Get the model's coefficients on the covariates.
-
-        Returns
-        -------
-        coef_ : {(d,), (p, d)} nd array like
-            The coefficients of the variables in the linear regression. If label y
-            was p-dimensional, then the result is a matrix of coefficents, whose p-th
-            row containts the coefficients corresponding to the p-th coordinate of the label.
-        """
-        if self.fit_intercept:
-            if self._n_out == 0:
-                return self._param[1:]
-            else:
-                return self._param[1:].T
-        else:
-            if self._n_out == 0:
-                return self._param
-            else:
-                return self._param.T
-
-    @property
-    def intercept_(self):
-        """
-        Get the intercept(s) (or 0 if no intercept was fit).
-
-        Returns
-        -------
-        intercept_ : float or (p,) nd array like
-            The intercept of the linear regresion. If label y was p-dimensional, then the result is a vector
-            whose p-th entry containts the intercept corresponding to the p-th coordinate of the label.
-        """
-        return self._param[0] if self.fit_intercept else (0 if self._n_out == 0 else np.zeros(self._n_out))
-
-    @property
-    def _param_var(self):
-        """
-        The covariance matrix of all the parameters in the regression (including the intercept as the first parameter).
-
-        Returns
-        -------
-        var : {(d (+1), d (+1)), (p, d (+1), d (+1))} nd array like
-            The covariance matrix of all the parameters in the regression (including the intercept
-            as the first parameter).  If intercept was set to False then this is the covariance matrix
-            of the coefficients; otherwise, the intercept is treated as the first parameter of the regression
-            and the coefficients as the remaining. If outcome y is p-dimensional, then this is a tensor whose
-            p-th entry contains the co-variance matrix for the parameters corresponding to the regression of
-            the p-th coordinate of the outcome.
-        """
-        return np.array(self._var)
-
-    @property
-    def _param_stderr(self):
-        """
-        The standard error of each parameter that was estimated.
-
-        Returns
-        -------
-        _param_stderr : {(d (+1),) (d (+1), p)} nd array like
-            The standard error of each parameter that was estimated.
-        """
-        if self._n_out == 0:
-            return np.sqrt(np.clip(np.diag(self._param_var), 0, np.inf))
-        else:
-            return np.array([np.sqrt(np.clip(np.diag(v), 0, np.inf)) for v in self._param_var]).T
-
-    @property
-    def coef_stderr_(self):
-        """
-        Gets the standard error of the fitted coefficients.
-
-        Returns
-        -------
-        coef_stderr_ : {(d,), (p, d)} nd array like
-            The standard error of the coefficients
-        """
-        return self._param_stderr[1:].T if self.fit_intercept else self._param_stderr.T
-
-    @property
-    def intercept_stderr_(self):
-        """
-        Gets the standard error of the intercept(s) (or 0 if no intercept was fit).
-
-        Returns
-        -------
-        intercept_stderr_ : float or (p,) nd array like
-            The standard error of the intercept(s)
-        """
-        return self._param_stderr[0] if self.fit_intercept else (0 if self._n_out == 0 else np.zeros(self._n_out))
-
-    def prediction_stderr(self, X):
-        """
-        Gets the standard error of the predictions.
-
-        Parameters
-        ----------
-        X : (n, d) array like
-            The covariates at which to predict
-
-        Returns
-        -------
-        prediction_stderr : (n, p) array like
-            The standard error of each coordinate of the output at each point we predict
-        """
-        if X is None:
-            X = np.empty((1, 0))
-        if self.fit_intercept:
-            X = add_constant(X, has_constant='add')
-        if self._n_out == 0:
-            return np.sqrt(np.clip(np.sum(np.matmul(X, self._param_var) * X, axis=1), 0, np.inf))
-        else:
-            return np.array([np.sqrt(np.clip(np.sum(np.matmul(X, v) * X, axis=1), 0, np.inf)) for v in self._var]).T
-
-    def coef__interval(self, alpha=.05):
-        """
-        Gets a confidence interval bounding the fitted coefficients.
-
-        Parameters
-        ----------
-        alpha : float
-            The confidence level. Will calculate the alpha/2-quantile and the (1-alpha/2)-quantile
-            of the parameter distribution as confidence interval
-
-        Returns
-        -------
-        coef__interval : {tuple ((p, d) array, (p,d) array), tuple ((d,) array, (d,) array)}
-            The lower and upper bounds of the confidence interval of the coefficients
-        """
-        return np.array([_safe_norm_ppf(alpha / 2, loc=p, scale=err)
-                         for p, err in zip(self.coef_, self.coef_stderr_)]),\
-            np.array([_safe_norm_ppf(1 - alpha / 2, loc=p, scale=err)
-                      for p, err in zip(self.coef_, self.coef_stderr_)])
-
-    def intercept__interval(self, alpha=.05):
-        """
-        Gets a confidence interval bounding the intercept(s) (or 0 if no intercept was fit).
-
-        Parameters
-        ----------
-        alpha : float
-            The confidence level. Will calculate the alpha/2-quantile and the (1-alpha/2)-quantile
-            of the parameter distribution as confidence interval
-
-        Returns
-        -------
-        intercept__interval : {tuple ((p,) array, (p,) array), tuple (float, float)}
-            The lower and upper bounds of the confidence interval of the intercept(s)
-        """
-        if not self.fit_intercept:
-            return (0 if self._n_out == 0 else np.zeros(self._n_out)),\
-                (0 if self._n_out == 0 else np.zeros(self._n_out))
-
-        if self._n_out == 0:
-            return _safe_norm_ppf(alpha / 2, loc=self.intercept_, scale=self.intercept_stderr_),\
-                _safe_norm_ppf(1 - alpha / 2, loc=self.intercept_, scale=self.intercept_stderr_)
-        else:
-            return np.array([_safe_norm_ppf(alpha / 2, loc=p, scale=err)
-                             for p, err in zip(self.intercept_, self.intercept_stderr_)]),\
-                np.array([_safe_norm_ppf(1 - alpha / 2, loc=p, scale=err)
-                          for p, err in zip(self.intercept_, self.intercept_stderr_)])
-
-    def predict_interval(self, X, alpha=.05):
-        """
-        Gets a confidence interval bounding the prediction.
-
-        Parameters
-        ----------
-        X : (n, d) array like
-            The covariates on which to predict
-        alpha : float
-            The confidence level. Will calculate the alpha/2-quantile and the (1-alpha/2)-quantile
-            of the parameter distribution as confidence interval
-
-        Returns
-        -------
-        prediction_intervals : {tuple ((n,) array, (n,) array), tuple ((n,p) array, (n,p) array)}
-            The lower and upper bounds of the confidence intervals of the predicted mean outcomes
-        """
-        return np.array([_safe_norm_ppf(alpha / 2, loc=p, scale=err)
-                         for p, err in zip(self.predict(X), self.prediction_stderr(X))]),\
-            np.array([_safe_norm_ppf(1 - alpha / 2, loc=p, scale=err)
-                      for p, err in zip(self.predict(X), self.prediction_stderr(X))])
-
-
-class LassoCVWrapper:
-    """Helper class to wrap either LassoCV or MultiTaskLassoCV depending on the shape of the target."""
-
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
-
-    def fit(self, X, Y):
-        assert shape(X)[0] == shape(Y)[0]
-        assert ndim(Y) <= 2
-        self.needs_unravel = False
-        if ndim(Y) == 2 and shape(Y)[1] > 1:
-            self.model = MultiTaskLassoCV(*self.args, **self.kwargs)
-        else:
-            if ndim(Y) == 2 and shape(Y)[1] == 1:
-                Y = np.ravel(Y)
-                self.needs_unravel = True
-            self.model = LassoCV(*self.args, **self.kwargs)
-        self.model.fit(X, Y)
-        return self
-
-    def predict(self, X):
-        predictions = self.model.predict(X)
-        return reshape(predictions, (-1, 1)) if self.needs_unravel else predictions
 
 
 class Summary:
@@ -1409,3 +1146,157 @@ class _EncoderWrapper:
 
         result = self._one_hot_encoder.transform(reshape(arr, (-1, 1)))
         return result[:, 1:] if self._drop_first else result
+
+
+def deprecated(message, category=FutureWarning):
+    """
+    Enables decorating a method or class to providing a warning when it is used.
+
+    Parameters
+    ----------
+    message: string
+        The deprecation message to use
+    category: optional :class:`type`, default :class:`FutureWarning`
+        The warning category to use
+    """
+    def decorator(to_wrap):
+
+        # if we're decorating a class, just update the __init__ method,
+        # so that the result is still a class instead of a wrapper method
+        if isinstance(to_wrap, type):
+            old_init = to_wrap.__init__
+
+            @wraps(to_wrap.__init__)
+            def new_init(*args, **kwargs):
+                warn(message, category, stacklevel=2)
+                old_init(*args, **kwargs)
+
+            to_wrap.__init__ = new_init
+
+            return to_wrap
+        else:
+            @wraps(to_wrap)
+            def m(*args, **kwargs):
+                warn(message, category, stacklevel=2)
+                return to_wrap(*args, **kwargs)
+            return m
+    return decorator
+
+
+def _deprecate_positional(message, bad_args, category=FutureWarning):
+    """
+    Enables decorating a method to provide a warning when certain arguments are used positionally.
+
+    Parameters
+    ----------
+    message: string
+        The deprecation message to use
+    bad_args : list of string
+        The positional arguments that will be keyword-only in the future
+    category: optional :class:`type`, default :class:`FutureWarning`
+        The warning category to use
+    """
+    def decorator(to_wrap):
+        @wraps(to_wrap)
+        def m(*args, **kwargs):
+            # want to enforce that each bad_arg was either in kwargs,
+            # or else it was in neither and is just taking its default value
+            bound = signature(m).bind(*args, **kwargs)
+
+            wrong_args = False
+            for arg in bad_args:
+                if arg not in kwargs and arg in bound.arguments:
+                    wrong_args = True
+            if wrong_args:
+                warn(message, category, stacklevel=2)
+            return to_wrap(*args, **kwargs)
+        return m
+    return decorator
+
+
+def transpose_dictionary(d):
+    """
+    Transpose a dictionary of dictionaries, bringing the keys from the second level
+    to the top and vice versa
+
+    Parameters
+    ----------
+    d: dict
+        The dictionary to transpose; the values of this dictionary should all themselves
+        be dictionaries
+
+    Returns
+    -------
+    output: dict
+        The output dictionary with first- and second-level keys swapped
+    """
+    output = defaultdict(dict)
+    for key1, value in d.items():
+        for key2, val in value.items():
+            output[key2][key1] = val
+    return output
+
+
+class _RegressionWrapper:
+    """
+    A simple wrapper that makes a binary classifier behave like a regressor.
+    Essentially .fit, calls the fit method of the classifier and
+    .predict calls the .predict_proba method of the classifier
+    and returns the probability of label 1.
+    """
+
+    def __init__(self, clf):
+        """
+        Parameters
+        ----------
+        clf : the classifier model
+        """
+        self._clf = clf
+
+    def fit(self, X, y, **kwargs):
+        """
+        Parameters
+        ----------
+        X : features
+        y : one-hot-encoding of binary label, with drop='first'
+        """
+        if len(y.shape) > 1 and y.shape[1] > 1:
+            y = y @ np.arange(1, y.shape[1] + 1)
+        self._clf.fit(X, y, **kwargs)
+        return self
+
+    def predict(self, X):
+        """
+        Parameters
+        ----------
+        X : features
+        """
+        return self._clf.predict_proba(X)[:, 1:]
+
+
+@deprecated("This class will be removed from a future version of this package; "
+            "please use econml.sklearn_extensions.linear_model.WeightedLassoCV instead.")
+class LassoCVWrapper:
+    """Helper class to wrap either LassoCV or MultiTaskLassoCV depending on the shape of the target."""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def fit(self, X, Y):
+        assert shape(X)[0] == shape(Y)[0]
+        assert ndim(Y) <= 2
+        self.needs_unravel = False
+        if ndim(Y) == 2 and shape(Y)[1] > 1:
+            self.model = MultiTaskLassoCV(*self.args, **self.kwargs)
+        else:
+            if ndim(Y) == 2 and shape(Y)[1] == 1:
+                Y = np.ravel(Y)
+                self.needs_unravel = True
+            self.model = LassoCV(*self.args, **self.kwargs)
+        self.model.fit(X, Y)
+        return self
+
+    def predict(self, X):
+        predictions = self.model.predict(X)
+        return reshape(predictions, (-1, 1)) if self.needs_unravel else predictions

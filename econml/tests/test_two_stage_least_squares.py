@@ -65,9 +65,9 @@ class Test2SLS(unittest.TestCase):
             sz = (n, d) if d >= 0 else (n,)
             return np.random.normal(size=sz)
 
-        for d_t in [1, 2]:
+        for d_t in [-1, 1, 2]:
             n_t = d_t if d_t > 0 else 1
-            for d_y in [1, 2]:
+            for d_y in [-1, 1, 2]:
                 for d_x in [1, 5]:
                     for d_z in [1, 2]:
                         d_w = 1
@@ -79,9 +79,18 @@ class Test2SLS(unittest.TestCase):
                                 z_featurizer=PolynomialFeatures(),
                                 dt_featurizer=DPolynomialFeatures())
 
-                            est.fit(Y, T, X, W, Z)
+                            est.fit(Y, T, X=X, W=W, Z=Z)
+
                             eff = est.effect(X)
                             marg_eff = est.marginal_effect(T, X)
+
+                            effect_shape = (n,) + ((d_y,) if d_y > 0 else ())
+                            marginal_effect_shape = ((n if d_x else 1,) +
+                                                     ((d_y,) if d_y > 0 else ()) +
+                                                     ((d_t,) if d_t > 0 else()))
+
+                            self.assertEqual(shape(marg_eff), marginal_effect_shape)
+                            self.assertEqual(shape(eff), effect_shape)
 
     def test_marg_eff(self):
         X = np.random.normal(size=(5000, 2))
@@ -97,7 +106,7 @@ class Test2SLS(unittest.TestCase):
             z_featurizer=PolynomialFeatures(degree=2, interaction_only=False, include_bias=True),
             dt_featurizer=DPolynomialFeatures(degree=2, interaction_only=False, include_bias=True))
 
-        est.fit(Y, T, X, W, Z)
+        est.fit(Y, T, X=X, W=W, Z=Z)
 
         # pick some arbitrary X
         X_test = np.array([[0.3, 0.7],
@@ -142,7 +151,7 @@ class Test2SLS(unittest.TestCase):
         for (dt, dx, dz) in [(0, 0, 0), (1, 1, 1), (5, 5, 5), (10, 10, 10), (3, 3, 10), (10, 10, 3)]:
             np2sls = NonparametricTwoStageLeastSquares(HermiteFeatures(
                 dt), HermiteFeatures(dx), HermiteFeatures(dz), HermiteFeatures(dt, shift=1))
-            np2sls.fit(y, p, x, w, z)
+            np2sls.fit(y, p, X=x, W=w, Z=z)
             effect = np2sls.effect(x_fresh, np.zeros(shape(p_fresh)), p_fresh)
             losses.append(np.mean(np.square(p_fresh * x_fresh - effect)))
             marg_effs.append(np2sls.marginal_effect(np.array([[0.3], [0.5], [0.7]]), np.array([[0.4], [0.6], [0.2]])))

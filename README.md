@@ -15,17 +15,16 @@ techniques with econometrics to bring automation to complex causal inference pro
 * Use a unified API
 * Build on standard Python packages for Machine Learning and Data Analysis
 
-In a nutshell, this
-toolkit is designed to measure the causal effect of some treatment variable(s) `T` on an outcome 
-variable `Y`, controlling for a set of features `X`. For detailed information about the package, 
-consult the documentation at https://econml.azurewebsites.net/.
+One of the biggest promises of machine learning is to automate decision making in a multitude of domains. At the core of many data-driven personalized decision scenarios is the estimation of heterogeneous treatment effects: what is the causal effect of an intervention on an outcome of interest for a sample with a particular set of features? In a nutshell, this toolkit is designed to measure the causal effect of some treatment variable(s) `T` on an outcome 
+variable `Y`, controlling for a set of features `X, W` and how does that effect vary as a function of `X`. The methods implemented are applicable even with observational (non-experimental or historical) datasets. For the estimation results to have a causal interpretation, some methods assume no unobserved confounders (i.e. there is no unobserved variable not included in `X, W` that simultaneously has an effect on both `T` and `Y`), while others assume access to an instrument `Z` (i.e. an observed variable `Z` that has an effect on the treatment `T` but no direct effect on the outcome `Y`). Most methods provide confidence intervals and inference results.
+
+For detailed information about the package, consult the documentation at https://econml.azurewebsites.net/.
+
+For information on use cases and background material on causal inference and heterogeneous treatment effects see our webpage at https://www.microsoft.com/en-us/research/project/econml/
 
 <details>
 <summary><strong><em>Table of Contents</em></strong></summary>
 
-- [Introduction](#introduction)
-  - [About Treatment Effect Estimation](#about-treatment-effect-estimation)
-  - [Example Applications](#example-applications)
 - [News](#news)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
@@ -43,57 +42,17 @@ consult the documentation at https://econml.azurewebsites.net/.
 
 </details>
 
-# Introduction
-
-## About Treatment Effect Estimation
-
-One of the biggest promises of machine learning is to automate decision making in a multitude of domains. At the core of many data-driven personalized decision scenarios is the estimation of heterogeneous treatment effects: what is the causal effect of an intervention on an outcome of interest for a sample with a particular set of features? 
-
-Such questions arise frequently in customer segmentation (what is the effect of placing a customer in a tier over another tier), dynamic pricing (what is the effect of a pricing policy on demand) and medical studies (what is the effect of a treatment on a patient). In many such settings we have an abundance of observational data, where the treatment was chosen via some unknown policy, but the ability to run control A/B tests is limited.
-
-## Example Applications
-
-<table style="width:80%">
-  <tr align="left">
-    <td width="25%"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/Business_card_-_The_Noun_Project.svg/610px-Business_card_-_The_Noun_Project.svg.png"/></td>
-    <td width="75%">
-        <h4>Customer Targeting</h4>
-        <p> Businesses offer personalized incentives to customers to increase sales and level of engagement. Any such personalized intervention corresponds to a monetary investment and the main question that business analytics are called to answer is: what is the return on investment? Analyzing the ROI is inherently a treatment effect question: what was the effect of any investment on a customer's spend? Understanding how ROI varies across customers can enable more targeted investment policies and increased ROI via better targeting. 
-        </p>
-    </td>
-  </tr>
-  <tr align="left">
-    <td width="25%"><img src="https://upload.wikimedia.org/wikipedia/commons/c/c9/Online-shop_button.jpg"/></td>
-    <td width="75%">
-        <h4>Personalized Pricing</h4>
-        <p>Personalized discounts have are widespread in the digital economy. To set the optimal personalized discount policy a business needs to understand what is the effect of a drop in price on the demand of a customer for a product as a function of customer characteristics. The estimation of such personalized demand elasticities can also be phrased in the language of heterogeneous treatment effects, where the treatment is the price on the demand as a function of observable features of the customer. </p>
-    </td>
-  </tr>
-  <tr align="left">
-    <td><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/55/VariousPills.jpg/640px-VariousPills.jpg"/></td>
-    <td width="75%">
-        <h4>Stratification in Clinical Trials</h4>
-        <p>
-        Which patients should be selected for a clinical trial? If we want to demonstrate that a clinical treatment has an effect on at least some subset of a population then fully randomized clinical trials are inappropriate as they will solely estimate average effects. Using heterogeneous treatment effect techniques, we can use observational data to come up with estimates of these effects and identify good candidate patients for a clinical trial that our model estimates have high treatment effects.
-        </p>
-    </td>
-  </tr>
-  <tr align="left">
-    <td width="25%"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Mouse-cursor-hand-pointer.svg/1023px-Mouse-cursor-hand-pointer.svg.png" width="200" /></td>
-    <td width="75%">
-        <h4>Learning Click-Through-Rates</h4>
-    <p>
-        In the design of a page layout and ad placement, it is important to understand the click-through-rate of page components on different positions of a page. Modern approaches may be to run multiple A/B tests, but when such page component involve revenue considerations, then observational data can help guide correct A/B tests to run. Heterogeneous treatment effect estimation can provide estimates of the click-through-rate of page components from observational data. In this setting, the treatment is simply whether the component is placed on that page position and the response is whether the user clicked on it.
-    </p>
-    </td>
-  </tr>
-</table>
-
 # News
 
-**March 6, 2020:** Release v0.7.0, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.7.0)
+**November 20, 2020:** Release v0.8.1, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.8.1)
 
 <details><summary>Previous releases</summary>
+
+**November 18, 2020:** Release v0.8.0, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.8.0)
+
+**September 4, 2020:** Release v0.8.0b1, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.8.0b1)
+
+**March 6, 2020:** Release v0.7.0, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.7.0)
 
 **February 18, 2020:** Release v0.7.0b1, see release notes [here](https://github.com/Microsoft/EconML/releases/tag/v0.7.0b1)
 
@@ -127,69 +86,107 @@ To install from source, see [For Developers](#for-developers) section below.
 ### Estimation Methods
 
 <details>
-  <summary>Double Machine Learning (click to expand)</summary>
+  <summary>Double Machine Learning (aka RLearner) (click to expand)</summary>
 
   * Linear final stage
 
   ```Python
-  from econml.dml import LinearDMLCateEstimator
+  from econml.dml import LinearDML
   from sklearn.linear_model import LassoCV
   from econml.inference import BootstrapInference
 
-  est = LinearDMLCateEstimator(model_y=LassoCV(), model_t=LassoCV())
+  est = LinearDML(model_y=LassoCV(), model_t=LassoCV())
   ### Estimate with OLS confidence intervals
-  est.fit(Y, T, X, W, inference='statsmodels') # W -> high-dimensional confounders, X -> features
+  est.fit(Y, T, X=X, W=W) # W -> high-dimensional confounders, X -> features
   treatment_effects = est.effect(X_test)
   lb, ub = est.effect_interval(X_test, alpha=0.05) # OLS confidence intervals
 
   ### Estimate with bootstrap confidence intervals
-  est.fit(Y, T, X, W, inference='bootstrap')  # with default bootstrap parameters
-  est.fit(Y, T, X, W, inference=BootstrapInference(n_bootstrap_samples=100))  # or customized
+  est.fit(Y, T, X=X, W=W, inference='bootstrap')  # with default bootstrap parameters
+  est.fit(Y, T, X=X, W=W, inference=BootstrapInference(n_bootstrap_samples=100))  # or customized
   lb, ub = est.effect_interval(X_test, alpha=0.05) # Bootstrap confidence intervals
   ```
 
   * Sparse linear final stage
 
   ```Python
-  from econml.dml import SparseLinearDMLCateEstimator
+  from econml.dml import SparseLinearDML
   from sklearn.linear_model import LassoCV
 
-  est = SparseLinearDMLCateEstimator(model_y=LassoCV(), model_t=LassoCV())
-  est.fit(Y, T, X, W, inference='debiasedlasso') # X -> high dimensional features
+  est = SparseLinearDML(model_y=LassoCV(), model_t=LassoCV())
+  est.fit(Y, T, X=X, W=W) # X -> high dimensional features
   treatment_effects = est.effect(X_test)
   lb, ub = est.effect_interval(X_test, alpha=0.05) # Confidence intervals via debiased lasso
   ```
   
-  * Nonparametric last stage
+  * Forest last stage
   
   ```Python
-  from econml.dml import ForestDMLCateEstimator
+  from econml.dml import ForestDML
   from sklearn.ensemble import GradientBoostingRegressor
 
-  est = ForestDMLCateEstimator(model_y=GradientBoostingRegressor(), model_t=GradientBoostingRegressor())
-  est.fit(Y, T, X, W, inference='blb') 
+  est = ForestDML(model_y=GradientBoostingRegressor(), model_t=GradientBoostingRegressor())
+  est.fit(Y, T, X=X, W=W) 
   treatment_effects = est.effect(X_test)
   # Confidence intervals via Bootstrap-of-Little-Bags for forests
   lb, ub = est.effect_interval(X_test, alpha=0.05)
+  ```
+  
+  * Generic Machine Learning last stage
+  
+  ```Python
+  from econml.dml import NonParamDML
+  from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+
+  est = NonParamDML(model_y=RandomForestRegressor(),
+                    model_t=RandomForestClassifier(),
+                    model_final=RandomForestRegressor(),
+                    discrete_treatment=True)
+  est.fit(Y, T, X=X, W=W) 
+  treatment_effects = est.effect(X_test)
   ```
 
 </details>
 
 <details>
+  <summary>Causal Forests (click to expand)</summary>
+
+  ```Python
+  from econml.causal_forest import CausalForest
+  from sklearn.linear_model import LassoCV
+  # Use defaults
+  est = CausalForest()
+  # Or specify hyperparameters
+  est = CausalForest(n_trees=500, min_leaf_size=10, 
+                     max_depth=10, subsample_ratio=0.7,
+                     lambda_reg=0.01,
+                     discrete_treatment=False,
+                     model_T=LassoCV(), model_Y=LassoCV())
+  est.fit(Y, T, X=X, W=W)
+  treatment_effects = est.effect(X_test)
+  # Confidence intervals via Bootstrap-of-Little-Bags for forests
+  lb, ub = est.effect_interval(X_test, alpha=0.05)
+  ```
+</details>
+
+
+<details>
   <summary>Orthogonal Random Forests (click to expand)</summary>
 
   ```Python
-  from econml.ortho_forest import ContinuousTreatmentOrthoForest
+  from econml.ortho_forest import DMLOrthoForest, DROrthoForest
   from econml.sklearn_extensions.linear_model import WeightedLasso, WeightedLassoCV
   # Use defaults
-  est = ContinuousTreatmentOrthoForest()
+  est = DMLOrthoForest()
+  est = DROrthoForest()
   # Or specify hyperparameters
-  est = ContinuousTreatmentOrthoForest(n_trees=500, min_leaf_size=10, 
-                                      max_depth=10, subsample_ratio=0.7,
-                                      lambda_reg=0.01,
-                                      model_T=WeightedLasso(alpha=0.01), model_Y=WeightedLasso(alpha=0.01),
-                                      model_T_final=WeightedLassoCV(cv=3), model_Y_final=WeightedLassoCV(cv=3))
-  est.fit(Y, T, X, W, inference='blb')
+  est = DMLOrthoForest(n_trees=500, min_leaf_size=10,
+                       max_depth=10, subsample_ratio=0.7,
+                       lambda_reg=0.01,
+                       discrete_treatment=False,
+                       model_T=WeightedLasso(alpha=0.01), model_Y=WeightedLasso(alpha=0.01),
+                       model_T_final=WeightedLassoCV(cv=3), model_Y_final=WeightedLassoCV(cv=3))
+  est.fit(Y, T, X=X, W=W)
   treatment_effects = est.effect(X_test)
   # Confidence intervals via Bootstrap-of-Little-Bags for forests
   lb, ub = est.effect_interval(X_test, alpha=0.05)
@@ -209,11 +206,11 @@ To install from source, see [For Developers](#for-developers) section below.
   est = XLearner(models=GradientBoostingRegressor(),
                 propensity_model=GradientBoostingClassifier(),
                 cate_models=GradientBoostingRegressor())
-  est.fit(Y, T, np.hstack([X, W]))
+  est.fit(Y, T, X=np.hstack([X, W]))
   treatment_effects = est.effect(np.hstack([X_test, W_test]))
 
   # Fit with bootstrap confidence interval construction enabled
-  est.fit(Y, T, np.hstack([X, W]), inference='bootstrap')
+  est.fit(Y, T, X=np.hstack([X, W]), inference='bootstrap')
   treatment_effects = est.effect(np.hstack([X_test, W_test]))
   lb, ub = est.effect_interval(np.hstack([X_test, W_test]), alpha=0.05) # Bootstrap CIs
   ```
@@ -225,7 +222,7 @@ To install from source, see [For Developers](#for-developers) section below.
   from sklearn.ensemble import GradientBoostingRegressor
 
   est = SLearner(overall_model=GradientBoostingRegressor())
-  est.fit(Y, T, np.hstack([X, W]))
+  est.fit(Y, T, X=np.hstack([X, W]))
   treatment_effects = est.effect(np.hstack([X_test, W_test]))
   ```
 
@@ -236,7 +233,7 @@ To install from source, see [For Developers](#for-developers) section below.
   from sklearn.ensemble import GradientBoostingRegressor
 
   est = TLearner(models=GradientBoostingRegressor())
-  est.fit(Y, T, np.hstack([X, W]))
+  est.fit(Y, T, X=np.hstack([X, W]))
   treatment_effects = est.effect(np.hstack([X_test, W_test]))
   ```
 </details>
@@ -253,7 +250,7 @@ from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifi
 
 est = LinearDRLearner(model_propensity=GradientBoostingClassifier(),
                       model_regression=GradientBoostingRegressor())
-est.fit(Y, T, X, W, inference='statsmodels')
+est.fit(Y, T, X=X, W=W)
 treatment_effects = est.effect(X_test)
 lb, ub = est.effect_interval(X_test, alpha=0.05)
 ```
@@ -266,7 +263,7 @@ from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifi
 
 est = SparseLinearDRLearner(model_propensity=GradientBoostingClassifier(),
                             model_regression=GradientBoostingRegressor())
-est.fit(Y, T, X, W, inference='debiasedlasso')
+est.fit(Y, T, X=X, W=W)
 treatment_effects = est.effect(X_test)
 lb, ub = est.effect_interval(X_test, alpha=0.05)
 ```
@@ -279,7 +276,7 @@ from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifi
 
 est = ForestDRLearner(model_propensity=GradientBoostingClassifier(),
                       model_regression=GradientBoostingRegressor())
-est.fit(Y, T, X, W, inference='blb') 
+est.fit(Y, T, X=X, W=W) 
 treatment_effects = est.effect(X_test)
 lb, ub = est.effect_interval(X_test, alpha=0.05)
 ```
@@ -298,7 +295,7 @@ from sklearn.linear_model import LinearRegression
 est = LinearIntentToTreatDRIV(model_Y_X=GradientBoostingRegressor(),
                               model_T_XZ=GradientBoostingClassifier(),
                               flexible_model_effect=GradientBoostingRegressor())
-est.fit(Y, T, Z, X, inference='statsmodels') # OLS inference
+est.fit(Y, T, Z=Z, X=X) # OLS inference by default
 treatment_effects = est.effect(X_test)
 lb, ub = est.effect_interval(X_test, alpha=0.05) # OLS confidence intervals
 ```
@@ -330,7 +327,7 @@ est = DeepIVEstimator(n_components=10, # Number of gaussians in the mixture dens
                       h=lambda t, x: response_model(keras.layers.concatenate([t, x])), # Response model
                       n_samples=1 # Number of samples used to estimate the response
                       )
-est.fit(Y, T, X, Z) # Z -> instrumental variables
+est.fit(Y, T, X=X, Z=Z) # Z -> instrumental variables
 treatment_effects = est.effect(X_test)
 ```
 </details>
@@ -338,7 +335,9 @@ treatment_effects = est.effect(X_test)
  See the <a href="#references">References</a> section for more details.
 
 ### Interpretability
-* Tree Interpreter of the CATE model
+<details>
+  <summary>Tree Interpreter of the CATE model (click to expand)</summary>
+  
   ```Python
   from econml.cate_interpreter import SingleTreeCateInterpreter
   intrp = SingleTreeCateInterpreter(include_model_uncertainty=True, max_depth=2, min_samples_leaf=10)
@@ -350,8 +349,12 @@ treatment_effects = est.effect(X_test)
   plt.show()
   ```
   ![image](notebooks/images/dr_cate_tree.png)
+  
+</details>
 
-* Policy Interpreter of the CATE model
+<details>
+  <summary>Policy Interpreter of the CATE model (click to expand)</summary>
+  
   ```Python
   from econml.cate_interpreter import SingleTreePolicyInterpreter
   # We find a tree-based treatment policy based on the CATE model
@@ -363,17 +366,49 @@ treatment_effects = est.effect(X_test)
   plt.show()
   ```
   ![image](notebooks/images/dr_policy_tree.png)
+  
+</details>
 
 ### Inference
+
+Whenever inference is enabled, then one can get a more structure `InferenceResults` object with more elaborate inference information, such
+as p-values and z-statistics. When the CATE model is linear and parametric, then a `summary()` method is also enabled. For instance:
+
   ```Python
+  from econml.dml import LinearDML
+  # Use defaults
+  est = LinearDML()
+  est.fit(Y, T, X=X, W=W)
   # Get the effect inference summary, which includes the standard error, z test score, p value, and confidence interval given each sample X[i]
   est.effect_inference(X_test).summary_frame(alpha=0.05, value=0, decimals=3)
   # Get the population summary for the entire sample X
   est.effect_inference(X_test).population_summary(alpha=0.1, value=0, decimals=3, tol=0.001)
-  #  Get the inference summary for the final model
+  #  Get the parameter inference summary for the final model
   est.summary()
   ```
-
+  
+  <details><summary>Example Output (click to expand)</summary>
+  
+  ```Python
+  # Get the effect inference summary, which includes the standard error, z test score, p value, and confidence interval given each sample X[i]
+  est.effect_inference(X_test).summary_frame(alpha=0.05, value=0, decimals=3)
+  ```
+  ![image](notebooks/images/summary_frame.png)
+  
+  ```Python
+  # Get the population summary for the entire sample X
+  est.effect_inference(X_test).population_summary(alpha=0.1, value=0, decimals=3, tol=0.001)
+  ```
+  ![image](notebooks/images/population_summary.png)
+  
+  ```Python
+  #  Get the parameter inference summary for the final model
+  est.summary()
+  ```
+  ![image](notebooks/images/summary.png)
+  
+  </details>
+  
 To see more complex examples, go to the [notebooks](https://github.com/Microsoft/EconML/tree/master/notebooks) section of the repository. For a more detailed description of the treatment effect estimation algorithms, see the EconML [documentation](https://econml.azurewebsites.net/).
 
 # For Developers
@@ -441,6 +476,10 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 
 # References
 
+X Nie, S Wager.
+**Quasi-Oracle Estimation of Heterogeneous Treatment Effects.**
+[*Biometrika*](https://doi.org/10.1093/biomet/asaa076), 2020
+
 V. Syrgkanis, V. Lei, M. Oprescu, M. Hei, K. Battocchi, G. Lewis.
 **Machine Learning Estimation of Heterogeneous Treatment Effects with Instruments.**
 [*Proceedings of the 33rd Conference on Neural Information Processing Systems (NeurIPS)*](https://arxiv.org/abs/1905.10176), 2019
@@ -459,9 +498,17 @@ S. Künzel, J. Sekhon, J. Bickel and B. Yu.
 **Metalearners for estimating heterogeneous treatment effects using machine learning.**
 [*Proceedings of the national academy of sciences, 116(10), 4156-4165*](https://www.pnas.org/content/116/10/4156), 2019.
 
+S. Athey, J. Tibshirani, S. Wager.
+**Generalized random forests.**
+[*Annals of Statistics, 47, no. 2, 1148--1178*](https://projecteuclid.org/euclid.aos/1547197251), 2019.
+
 V. Chernozhukov, D. Nekipelov, V. Semenova, V. Syrgkanis.
 **Plug-in Regularized Estimation of High-Dimensional Parameters in Nonlinear Semiparametric Models.**
 [*Arxiv preprint arxiv:1806.04823*](https://arxiv.org/abs/1806.04823), 2018.
+
+S. Wager, S. Athey.
+**Estimation and Inference of Heterogeneous Treatment Effects using Random Forests.**
+[*Journal of the American Statistical Association, 113:523, 1228-1242*](https://www.tandfonline.com/doi/citedby/10.1080/01621459.2017.1319839), 2018.
 
 Jason Hartford, Greg Lewis, Kevin Leyton-Brown, and Matt Taddy. **Deep IV: A flexible approach for counterfactual prediction.** [*Proceedings of the 34th International Conference on Machine Learning, ICML'17*](http://proceedings.mlr.press/v70/hartford17a/hartford17a.pdf), 2017.
 

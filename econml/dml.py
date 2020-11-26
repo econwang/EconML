@@ -33,27 +33,34 @@ References
 
 """
 
-import numpy as np
-import copy
+
 from warnings import warn
-from .utilities import (shape, reshape, ndim, hstack, cross_product, transpose, inverse_onehot,
-                        broadcast_unit_treatments, reshape_treatmentwise_effects, add_intercept,
-                        StatsModelsLinearRegression, LassoCVWrapper, check_high_dimensional)
-from econml.sklearn_extensions.linear_model import MultiOutputDebiasedLasso, WeightedLassoCVWrapper
-from econml.sklearn_extensions.ensemble import SubsampledHonestForest
+
+import numpy as np
+from sklearn.base import TransformerMixin, clone
+from sklearn.linear_model import (ElasticNetCV, LassoCV, LogisticRegressionCV)
 from sklearn.model_selection import KFold, StratifiedKFold, check_cv
-from sklearn.linear_model import LinearRegression, LassoCV, LogisticRegressionCV, ElasticNetCV
-from sklearn.preprocessing import (PolynomialFeatures, LabelEncoder, OneHotEncoder,
-                                   FunctionTransformer)
-from sklearn.base import clone, TransformerMixin
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import (FunctionTransformer, LabelEncoder,
+                                   OneHotEncoder)
 from sklearn.utils import check_random_state
-from .cate_estimator import (BaseCateEstimator, LinearCateEstimator,
-                             TreatmentExpansionMixin, StatsModelsCateEstimatorMixin,
-                             DebiasedLassoCateEstimatorMixin)
-from .inference import StatsModelsInference, GenericSingleTreatmentModelFinalInference
+
 from ._rlearner import _RLearner
+from .cate_estimator import (DebiasedLassoCateEstimatorMixin,
+                             ForestModelFinalCateEstimatorMixin,
+                             LinearModelFinalCateEstimatorMixin,
+                             StatsModelsCateEstimatorMixin)
+from .inference import StatsModelsInference
+from .sklearn_extensions.ensemble import SubsampledHonestForest
+from .sklearn_extensions.linear_model import (MultiOutputDebiasedLasso,
+                                              StatsModelsLinearRegression,
+                                              WeightedLassoCVWrapper)
 from .sklearn_extensions.model_selection import WeightedStratifiedKFold
+from .utilities import (_deprecate_positional, add_intercept,
+                        broadcast_unit_treatments, check_high_dimensional,
+                        check_input_arrays, cross_product, deprecated,
+                        fit_with_groups, hstack, inverse_onehot, ndim, reshape,
+                        reshape_treatmentwise_effects, shape, transpose)
 
 
 class _FirstStageWrapper:
@@ -78,7 +85,7 @@ class _FirstStageWrapper:
         else:
             return XW
 
-    def fit(self, X, W, Target, sample_weight=None):
+    def fit(self, X, W, Target, sample_weight=None, groups=None):
         if (not self._is_Y) and self._discrete_treatment:
             # In this case, the Target is the one-hot-encoding of the treatment variable
             # We need to go back to the label representation of the one-hot so as to call
@@ -89,9 +96,10 @@ class _FirstStageWrapper:
             Target = inverse_onehot(Target)
 
         if sample_weight is not None:
-            self._model.fit(self._combine(X, W, Target.shape[0]), Target, sample_weight=sample_weight)
+            fit_with_groups(self._model, self._combine(X, W, Target.shape[0]), Target, groups=groups,
+                            sample_weight=sample_weight)
         else:
-            self._model.fit(self._combine(X, W, Target.shape[0]), Target)
+            fit_with_groups(self._model, self._combine(X, W, Target.shape[0]), Target, groups=groups)
 
     def predict(self, X, W):
         n_samples = X.shape[0] if X is not None else (W.shape[0] if W is not None else 1)
@@ -146,7 +154,7 @@ class _FinalWrapper:
             if not self._fit_cate_intercept:
                 if self._use_weight_trick:
                     raise AttributeError("Cannot use this method with X=None. Consider "
-                                         "using the LinearDMLCateEstimator.")
+                                         "using the LinearDML estimator.")
                 else:
                     raise AttributeError("Cannot have X=None and also not allow for a CATE intercept!")
             F = np.ones((T.shape[0], 1))
@@ -213,7 +221,7 @@ class _FinalWrapper:
                                              self._d_t, self._d_y)
 
 
-class _BaseDMLCateEstimator(_RLearner):
+class _BaseDML(_RLearner):
     # A helper class that access all the internal fitted objects of a DML Cate Estimator. Used by
     # both Parametric and Non Parametric DML.
 
@@ -296,7 +304,7 @@ class _BaseDMLCateEstimator(_RLearner):
             raise AttributeError("Featurizer does not have a method: get_feature_names!")
 
 
-class DMLCateEstimator(_BaseDMLCateEstimator):
+class DML(LinearModelFinalCateEstimatorMixin, _BaseDML):
     """
     The base class for parametric Double ML estimators. The estimator is a special
     case of an :class:`._RLearner` estimator, which in turn is a special case
@@ -321,7 +329,7 @@ class DMLCateEstimator(_BaseDMLCateEstimator):
     Where :math:`\\tilde{Y}=Y - \\E[Y | X, W]` and :math:`\\tilde{T}=T-\\E[T | X, W]` denotes the
     residual outcome and residual treatment.
 
-    The DMLCateEstimator further assumes a linear parametric form for the cate, i.e. for each outcome
+    The DML estimator further assumes a linear parametric form for the cate, i.e. for each outcome
     :math:`i` and treatment :math:`j`:
 
     .. math ::
@@ -332,12 +340,12 @@ class DMLCateEstimator(_BaseDMLCateEstimator):
     interface :class:`~sklearn.base.TransformerMixin`).
 
     The second nuisance function :math:`q` is a simple regression problem and the
-    :class:`.DMLCateEstimator`
+    :class:`.DML`
     class takes as input the parameter `model_y`, which is an arbitrary scikit-learn regressor that
     is internally used to solve this regression problem.
 
     The problem of estimating the nuisance function :math:`f` is also a regression problem and
-    the :class:`.DMLCateEstimator`
+    the :class:`.DML`
     class takes as input the parameter `model_t`, which is an arbitrary scikit-learn regressor that
     is internally used to solve this regression problem. If the init flag `discrete_treatment` is set
     to `True`, then the parameter `model_t` is treated as a scikit-learn classifier. The input categorical
@@ -348,15 +356,16 @@ class DMLCateEstimator(_BaseDMLCateEstimator):
     The final stage is (potentially multi-task) linear regression problem with outcomes the labels
     :math:`\\tilde{Y}` and regressors the composite features
     :math:`\\tilde{T}\\otimes \\phi(X) = \\mathtt{vec}(\\tilde{T}\\cdot \\phi(X)^T)`.
-    The :class:`.DMLCateEstimator` takes as input parameter
+    The :class:`.DML` takes as input parameter
     ``model_final``, which is any linear scikit-learn regressor that is internally used to solve this
     (multi-task) linear regresion problem.
 
     Parameters
     ----------
-    model_y: estimator
+    model_y: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the response to the features. Must implement
-        `fit` and `predict` methods.  Must be a linear model for correctness when linear_first_stages is ``True``.
+        `fit` and `predict` methods.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     model_t: estimator or 'auto' (default is 'auto')
         The estimator for fitting the treatment to the features.
@@ -427,11 +436,14 @@ class DMLCateEstimator(_BaseDMLCateEstimator):
 
         # TODO: consider whether we need more care around stateful featurizers,
         #       since we clone it and fit separate copies
+        if model_y == 'auto':
+            model_y = WeightedLassoCVWrapper(random_state=random_state)
         if model_t == 'auto':
             if discrete_treatment:
-                model_t = LogisticRegressionCV(cv=WeightedStratifiedKFold())
+                model_t = LogisticRegressionCV(cv=WeightedStratifiedKFold(random_state=random_state),
+                                               random_state=random_state)
             else:
-                model_t = WeightedLassoCVWrapper()
+                model_t = WeightedLassoCVWrapper(random_state=random_state)
         self.bias_part_of_coef = fit_cate_intercept
         self.fit_cate_intercept = fit_cate_intercept
         super().__init__(model_y=_FirstStageWrapper(model_y, True,
@@ -444,16 +456,48 @@ class DMLCateEstimator(_BaseDMLCateEstimator):
                          n_splits=n_splits,
                          random_state=random_state)
 
+    # override only so that we can update the docstring to indicate support for `StatsModelsInference`
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
+        """
+        Estimate the counterfactual model from data, i.e. estimates functions τ(·,·,·), ∂τ(·,·).
 
-class LinearDMLCateEstimator(StatsModelsCateEstimatorMixin, DMLCateEstimator):
+        Parameters
+        ----------
+        Y: (n × d_y) matrix or vector of length n
+            Outcomes for each sample
+        T: (n × dₜ) matrix or vector of length n
+            Treatments for each sample
+        X: optional (n × dₓ) matrix
+            Features for each sample
+        W: optional (n × d_w) matrix
+            Controls for each sample
+        sample_weight: optional (n,) vector
+            Weights for each row
+        inference: string, :class:`.Inference` instance, or None
+            Method for performing inference.  This estimator supports 'bootstrap'
+            (or an instance of :class:`.BootstrapInference`) and 'auto'
+            (or an instance of :class:`.LinearModelFinalInference`)
+
+        Returns
+        -------
+        self
+        """
+        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
+
+
+class LinearDML(StatsModelsCateEstimatorMixin, DML):
     """
     The Double ML Estimator with a low-dimensional linear final stage implemented as a statsmodel regression.
 
     Parameters
     ----------
-    model_y: estimator, optional (default is :class:`.WeightedLassoCVWrapper`)
+    model_y: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the response to the features. Must implement
         `fit` and `predict` methods.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     model_t: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the treatment to the features.
@@ -506,7 +550,7 @@ class LinearDMLCateEstimator(StatsModelsCateEstimatorMixin, DMLCateEstimator):
     """
 
     def __init__(self,
-                 model_y=WeightedLassoCVWrapper(), model_t='auto',
+                 model_y='auto', model_t='auto',
                  featurizer=None,
                  fit_cate_intercept=True,
                  linear_first_stages=True,
@@ -526,7 +570,9 @@ class LinearDMLCateEstimator(StatsModelsCateEstimatorMixin, DMLCateEstimator):
                          random_state=random_state)
 
     # override only so that we can update the docstring to indicate support for `StatsModelsInference`
-    def fit(self, Y, T, X=None, W=None, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates functions τ(·,·,·), ∂τ(·,·).
 
@@ -542,6 +588,12 @@ class LinearDMLCateEstimator(StatsModelsCateEstimatorMixin, DMLCateEstimator):
             Controls for each sample
         sample_weight: optional (n,) vector
             Weights for each row
+        sample_var: (n,) vector, optional
+            Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, :class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of :class:`.BootstrapInference`) and 'statsmodels'
@@ -551,10 +603,12 @@ class LinearDMLCateEstimator(StatsModelsCateEstimatorMixin, DMLCateEstimator):
         -------
         self
         """
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
 
-class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstimator):
+class SparseLinearDML(DebiasedLassoCateEstimatorMixin, DML):
     """
     A specialized version of the Double ML estimator for the sparse linear case.
 
@@ -566,10 +620,10 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
 
     Parameters
     ----------
-    model_y: estimator, optional (default is :class:`WeightedLassoCVWrapper()
-        <econml.sklearn_extensions.linear_model.WeightedLassoCVWrapper>`)
+    model_y: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the response to the features. Must implement
         `fit` and `predict` methods.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     model_t: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the treatment to the features.
@@ -637,7 +691,7 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
     """
 
     def __init__(self,
-                 model_y=WeightedLassoCVWrapper(), model_t='auto',
+                 model_y='auto', model_t='auto',
                  alpha='auto',
                  max_iter=1000,
                  tol=1e-4,
@@ -652,7 +706,8 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
             alpha=alpha,
             fit_intercept=False,
             max_iter=max_iter,
-            tol=tol)
+            tol=tol,
+            random_state=random_state)
         super().__init__(model_y=model_y,
                          model_t=model_t,
                          model_final=model_final,
@@ -664,7 +719,9 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
                          n_splits=n_splits,
                          random_state=random_state)
 
-    def fit(self, Y, T, X=None, W=None, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates functions τ(·,·,·), ∂τ(·,·).
 
@@ -683,6 +740,10 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
         sample_var: optional (n, n_y) vector
             Variance of sample, in case it corresponds to summary of many samples. Currently
             not in use by this method but will be supported in a future release.
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, `Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of :class:`.BootstrapInference`) and 'debiasedlasso'
@@ -696,37 +757,42 @@ class SparseLinearDMLCateEstimator(DebiasedLassoCateEstimatorMixin, DMLCateEstim
         if sample_var is not None and inference is not None:
             warn("This estimator does not yet support sample variances and inference does not take "
                  "sample variances into account. This feature will be supported in a future release.")
+        Y, T, X, W, sample_weight, sample_var = check_input_arrays(Y, T, X, W, sample_weight, sample_var)
         check_high_dimensional(X, T, threshold=5, featurizer=self.featurizer,
                                discrete_treatment=self._discrete_treatment,
                                msg="The number of features in the final model (< 5) is too small for a sparse model. "
-                               "We recommend using the LinearDMLCateEstimator for this low-dimensional setting.")
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=None, inference=inference)
+                               "We recommend using the LinearDML estimator for this low-dimensional setting.")
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=None, groups=groups,
+                           inference=inference)
 
 
 class _RandomFeatures(TransformerMixin):
     def __init__(self, dim, bw, random_state):
         self._dim = dim
         self._bw = bw
-        self._random_state = check_random_state(random_state)
+        self._random_state = random_state
 
     def fit(self, X):
-        self.omegas = self._random_state.normal(0, 1 / self._bw, size=(shape(X)[1], self._dim))
-        self.biases = self._random_state.uniform(0, 2 * np.pi, size=(1, self._dim))
+        random_state = check_random_state(self._random_state)
+        self.omegas = random_state.normal(0, 1 / self._bw, size=(shape(X)[1], self._dim))
+        self.biases = random_state.uniform(0, 2 * np.pi, size=(1, self._dim))
         return self
 
     def transform(self, X):
         return np.sqrt(2 / self._dim) * np.cos(np.matmul(X, self.omegas) + self.biases)
 
 
-class KernelDMLCateEstimator(DMLCateEstimator):
+class KernelDML(DML):
     """
     A specialized version of the linear Double ML Estimator that uses random fourier features.
 
     Parameters
     ----------
-    model_y: estimator, optional (default is :class:`<econml.sklearn_extensions.linear_model.WeightedLassoCVWrapper>`)
+    model_y: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the response to the features. Must implement
         `fit` and `predict` methods.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     model_t: estimator or 'auto', optional (default is 'auto')
         The estimator for fitting the treatment to the features.
@@ -776,10 +842,10 @@ class KernelDMLCateEstimator(DMLCateEstimator):
         by :mod:`np.random<numpy.random>`.
     """
 
-    def __init__(self, model_y=WeightedLassoCVWrapper(), model_t='auto', fit_cate_intercept=True,
+    def __init__(self, model_y='auto', model_t='auto', fit_cate_intercept=True,
                  dim=20, bw=1.0, discrete_treatment=False, categories='auto', n_splits=2, random_state=None):
         super().__init__(model_y=model_y, model_t=model_t,
-                         model_final=ElasticNetCV(fit_intercept=False),
+                         model_final=ElasticNetCV(fit_intercept=False, random_state=random_state),
                          featurizer=_RandomFeatures(dim, bw, random_state),
                          fit_cate_intercept=fit_cate_intercept,
                          discrete_treatment=discrete_treatment,
@@ -787,7 +853,7 @@ class KernelDMLCateEstimator(DMLCateEstimator):
                          n_splits=n_splits, random_state=random_state)
 
 
-class NonParamDMLCateEstimator(_BaseDMLCateEstimator):
+class NonParamDML(_BaseDML):
     """
     The base class for non-parametric Double ML estimators, that can have arbitrary final ML models of the CATE.
     Works only for single-dimensional continuous treatment or for binary categorical treatment and uses
@@ -866,8 +932,8 @@ class NonParamDMLCateEstimator(_BaseDMLCateEstimator):
                          random_state=random_state)
 
 
-class ForestDMLCateEstimator(NonParamDMLCateEstimator):
-    """ Instance of NonParamDMLCateEstimator with a
+class ForestDML(ForestModelFinalCateEstimatorMixin, NonParamDML):
+    """ Instance of NonParamDML with a
     :class:`~econml.sklearn_extensions.ensemble.SubsampledHonestForest`
     as a final model, so as to enable non-parametric inference.
 
@@ -1058,13 +1124,9 @@ class ForestDMLCateEstimator(NonParamDMLCateEstimator):
                          categories=categories,
                          n_splits=n_crossfit_splits, random_state=random_state)
 
-    def _get_inference_options(self):
-        # add statsmodels to parent's options
-        options = super()._get_inference_options()
-        options.update(blb=GenericSingleTreatmentModelFinalInference)
-        return options
-
-    def fit(self, Y, T, X=None, W=None, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates functions τ(·,·,·), ∂τ(·,·).
 
@@ -1083,6 +1145,10 @@ class ForestDMLCateEstimator(NonParamDMLCateEstimator):
         sample_var: optional (n, n_y) vector
             Variance of sample, in case it corresponds to summary of many samples. Currently
             not in use by this method (as inference method does not require sample variance info).
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, `Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of :class:`.BootstrapInference`) and 'blb'
@@ -1092,4 +1158,42 @@ class ForestDMLCateEstimator(NonParamDMLCateEstimator):
         -------
         self
         """
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=None, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=None, groups=groups,
+                           inference=inference)
+
+
+@deprecated("The DMLCateEstimator class has been renamed to DML; "
+            "an upcoming release will remove support for the old name")
+class DMLCateEstimator(DML):
+    pass
+
+
+@deprecated("The LinearDMLCateEstimator class has been renamed to LinearDML; "
+            "an upcoming release will remove support for the old name")
+class LinearDMLCateEstimator(LinearDML):
+    pass
+
+
+@deprecated("The SparseLinearDMLCateEstimator class has been renamed to SparseLinearDML; "
+            "an upcoming release will remove support for the old name")
+class SparseLinearDMLCateEstimator(SparseLinearDML):
+    pass
+
+
+@deprecated("The KernelDMLCateEstimator class has been renamed to KernelDML; "
+            "an upcoming release will remove support for the old name")
+class KernelDMLCateEstimator(KernelDML):
+    pass
+
+
+@deprecated("The NonParamDMLCateEstimator class has been renamed to NonParamDML; "
+            "an upcoming release will remove support for the old name")
+class NonParamDMLCateEstimator(NonParamDML):
+    pass
+
+
+@deprecated("The ForestDMLCateEstimator class has been renamed to ForestDML; "
+            "an upcoming release will remove support for the old name")
+class ForestDMLCateEstimator(ForestDML):
+    pass

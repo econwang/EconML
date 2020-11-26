@@ -13,14 +13,14 @@ to model the treatment effect heterogeneity. We collect these methods in a singl
 their comparisons and differences. Currently, our package offers three such estimation methods:
 
 * The Orthogonal Random Forest Estimator (see :class:`.ContinuousTreatmentOrthoForest`, :class:`.DiscreteTreatmentOrthoForest`)
-* The Forest Double Machine Learning Estimator (aka Causal Forest) (see :class:`.ForestDMLCateEstimator`)
+* The Forest Double Machine Learning Estimator (aka Causal Forest) (see :class:`.ForestDML`)
 * The Forest Doubly Robust Estimator (see :class:`.ForestDRLearner`).
 
 These estimators, similar to the DML and DR sections require the unconfoundedness assumption, i.e. that all potential
 variables that could simultaneously have affected the treatment and the outcome to be observed.
 
 There many commonalities among these estimators. In particular the :class:`.ContinuousTreatmentOrthoForest` shares
-many similarities with the :class:`.ForestDMLCateEstimator` and the :class:`.DiscreteTreatmentOrthoForest` shares
+many similarities with the :class:`.ForestDML` and the :class:`.DiscreteTreatmentOrthoForest` shares
 many similarities with the :class:`.ForestDRLearner`. Specifically, the corresponding classes use the same estimating (moment)
 equations to identify the heterogeneous treatment effect. However, they differ in a substantial manner in how they
 estimate the first stage regression/classification (nuisance) models. In particular, the OrthoForest methods fit
@@ -42,7 +42,7 @@ What are the relevant estimator classes?
 
 This section describes the methodology implemented in the classes, :class:`.ContinuousTreatmentOrthoForest`,
 :class:`.DiscreteTreatmentOrthoForest`,
-:class:`.ForestDMLCateEstimator`, :class:`.ForestDRLearner`.
+:class:`.ForestDML`, :class:`.ForestDRLearner`.
 Click on each of these links for a detailed module documentation and input parameters of each class.
 
 
@@ -291,7 +291,7 @@ This is exactly what is implemented in the SubsampledHonestForest (see :class:`.
 these ideas leads to a "reduction-based" approach implementation of the Causal Forest, that re-uses and only slightly modifies
 existing impementations of regression forests.
 
-For more details on Double Machine Learning and how the :class:`.ForestDMLCateEstimator` fits into our overall
+For more details on Double Machine Learning and how the :class:`.ForestDML` fits into our overall
 set of DML based CATE estimators, check out the :ref:`Double Machine Learning User Guide <dmluserguide>`.
 
 Forest Doubly Robust Learner
@@ -331,7 +331,7 @@ sample :math:`X_i`. This is implemented in the SubsampledHonestForest (see :clas
 Class Hierarchy Structure
 =========================
 
-.. inheritance-diagram:: econml.ortho_forest.ContinuousTreatmentOrthoForest econml.ortho_forest.DiscreteTreatmentOrthoForest econml.drlearner.ForestDRLearner econml.dml.ForestDMLCateEstimator
+.. inheritance-diagram:: econml.ortho_forest.ContinuousTreatmentOrthoForest econml.ortho_forest.DiscreteTreatmentOrthoForest econml.drlearner.ForestDRLearner econml.dml.ForestDML
         :parts: 1
         :private-bases:
         :top-classes: econml._ortho_learner._OrthoLearner, econml.ortho_forest.BaseOrthoForest, econml.cate_estimator.LinearCateEstimator
@@ -360,7 +360,7 @@ and the `ForestLearners Jupyter notebook <https://github.com/microsoft/EconML/bl
     >>> est = ContinuousTreatmentOrthoForest(n_trees=1, max_depth=1, subsample_ratio=1,
     ...                                      model_T=sklearn.linear_model.LinearRegression(),
     ...                                      model_Y=sklearn.linear_model.LinearRegression())
-    >>> est.fit(Y, T, W, W)
+    >>> est.fit(Y, T, X=W, W=W)
     <econml.ortho_forest.ContinuousTreatmentOrthoForest object at 0x...>
     >>> print(est.effect(W[:2]))
     [1.00...  1.19...]
@@ -373,7 +373,7 @@ Similarly, we can call :class:`.DiscreteTreatmentOrthoForest`:
     >>> est = DiscreteTreatmentOrthoForest(n_trees=1, max_depth=1, subsample_ratio=1,
     ...                                    propensity_model=sklearn.linear_model.LogisticRegression(),
     ...                                    model_Y=sklearn.linear_model.LinearRegression())
-    >>> est.fit(Y, T, W, W)
+    >>> est.fit(Y, T, X=W, W=W)
     <econml.ortho_forest.DiscreteTreatmentOrthoForest object at 0x...>
     >>> print(est.effect(W[:2]))
     [0.99...  1.35...]
@@ -397,7 +397,7 @@ both the treatment and the outcome regressions, in the case of continuous treatm
     ...                                     max_depth=5,
     ...                                     model_Y=WeightedLasso(alpha=0.01),
     ...                                     model_T=WeightedLasso(alpha=0.01))
-    >>> est.fit(Y, T, X, W)
+    >>> est.fit(Y, T, X=X, W=W)
     <econml.ortho_forest.ContinuousTreatmentOrthoForest object at 0x...>
     >>> X_test = np.linspace(-1, 1, 30).reshape(-1, 1)
     >>> treatment_effects = est.effect(X_test)

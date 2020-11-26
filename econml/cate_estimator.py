@@ -8,11 +8,11 @@ import numpy as np
 from functools import wraps
 from copy import deepcopy
 from warnings import warn
-from .bootstrap import BootstrapEstimator
 from .inference import BootstrapInference
-from .utilities import tensordot, ndim, reshape, shape, parse_final_model_params, inverse_onehot
+from .utilities import tensordot, ndim, reshape, shape, parse_final_model_params, inverse_onehot, Summary
 from .inference import StatsModelsInference, StatsModelsInferenceDiscrete, LinearModelFinalInference,\
-    LinearModelFinalInferenceDiscrete, InferenceResults
+    LinearModelFinalInferenceDiscrete, NormalInferenceResults, GenericSingleTreatmentModelFinalInference,\
+    GenericModelFinalInferenceDiscrete
 
 
 class BaseCateEstimator(metaclass=abc.ABCMeta):
@@ -41,6 +41,21 @@ class BaseCateEstimator(metaclass=abc.ABCMeta):
         #   est1.effect_interval(...)
         # because inf now stores state from fitting est2
         return deepcopy(inference)
+
+    def _strata(self, Y, T, *args, **kwargs):
+        """
+        Get an array of values representing strata that should be preserved by bootstrapping.  For example,
+        if treatment is discrete, then each bootstrapped estimator needs to be given at least one instance
+        with each treatment type.  For estimators like DRIV, then the same is true of the combination of
+        treatment and instrument.  The arguments to this method will match those to fit.
+
+        Returns
+        -------
+        strata : array or None
+            A vector with the same number of rows as the inputs, where the unique values represent
+            the strata that need to be preserved by bootstrapping, or None if no preservation is necessary.
+        """
+        return None
 
     def _prefit(self, Y, T, *args, **kwargs):
         self._d_y = np.shape(Y)[1:]
@@ -366,20 +381,17 @@ class LinearCateEstimator(BaseCateEstimator):
     def marginal_effect_interval(self, T, X=None, *, alpha=0.1):
         X, T = self._expand_treatments(X, T)
         effs = self.const_marginal_effect_interval(X=X, alpha=alpha)
-        return tuple(np.repeat(eff, shape(T)[0], axis=0) if X is None else eff
-                     for eff in effs)
+        if X is None:  # need to repeat by the number of rows of T to ensure the right shape
+            effs = tuple(np.repeat(eff, shape(T)[0], axis=0) for eff in effs)
+        return effs
     marginal_effect_interval.__doc__ = BaseCateEstimator.marginal_effect_interval.__doc__
 
     def marginal_effect_inference(self, T, X=None):
         X, T = self._expand_treatments(X, T)
         cme_inf = self.const_marginal_effect_inference(X=X)
-        pred = cme_inf.point_estimate
-        pred_stderr = cme_inf.stderr
         if X is None:
-            pred = np.repeat(pred, shape(T)[0], axis=0)
-            pred_stderr = np.repeat(pred_stderr, shape(T)[0], axis=0)
-        return InferenceResults(d_t=cme_inf.d_t, d_y=cme_inf.d_y, pred=pred,
-                                pred_stderr=pred_stderr, inf_type='effect', pred_dist=None, fname_transformer=None)
+            cme_inf = cme_inf._expand_outputs(shape(T)[0])
+        return cme_inf
     marginal_effect_inference.__doc__ = BaseCateEstimator.marginal_effect_inference.__doc__
 
     @BaseCateEstimator._defer_to_inference
@@ -473,6 +485,11 @@ class LinearModelFinalCateEstimatorMixin(BaseCateEstimator):
         Whether the CATE model's intercept is contained in the final model's ``coef_`` rather
         than as a separate ``intercept_``
     """
+
+    def _get_inference_options(self):
+        options = super()._get_inference_options()
+        options.update(auto=LinearModelFinalInference)
+        return options
 
     bias_part_of_coef = False
 
@@ -574,8 +591,7 @@ class LinearModelFinalCateEstimatorMixin(BaseCateEstimator):
         """
         pass
 
-    @BaseCateEstimator._defer_to_inference
-    def summary(self, alpha=0.1, value=0, decimals=3, feat_name=None):
+    def summary(self, alpha=0.1, value=0, decimals=3, feat_name=None, treatment_name=None, output_name=None):
         """ The summary of coefficient and intercept in the linear model of the constant marginal treatment
         effect.
 
@@ -590,6 +606,10 @@ class LinearModelFinalCateEstimatorMixin(BaseCateEstimator):
             Number of decimal places to round each column to.
         feat_name: optional list of strings or None (default is None)
             The input of the feature names
+        treatment_name: optional list of strings or None (default is None)
+            The names of the treatments
+        output_name: optional list of strings or None (default is None)
+            The names of the outputs
 
         Returns
         -------
@@ -597,7 +617,48 @@ class LinearModelFinalCateEstimatorMixin(BaseCateEstimator):
             this holds the summary tables and text, which can be printed or
             converted to various output formats.
         """
-        pass
+        smry = Summary()
+        smry.add_extra_txt(["<sub>A linear parametric conditional average treatment effect (CATE) model was fitted:",
+                            "$Y = \\Theta(X)\\cdot T + g(X, W) + \\epsilon$",
+                            "where for every outcome $i$ and treatment $j$ the CATE $\\Theta_{ij}(X)$ has the form:",
+                            "$\\Theta_{ij}(X) = \\phi(X)' coef_{ij} + cate\\_intercept_{ij}$",
+                            "where $\\phi(X)$ is the output of the `featurizer` or $X$ if `featurizer`=None. "
+                            "Coefficient Results table portrays the $coef_{ij}$ parameter vector for "
+                            "each outcome $i$ and treatment $j$. "
+                            "Intercept Results table portrays the $cate\\_intercept_{ij}$ parameter.</sub>"])
+        d_t = self._d_t[0] if self._d_t else 1
+        d_y = self._d_y[0] if self._d_y else 1
+        try:
+            coef_table = self.coef__inference().summary_frame(alpha=alpha,
+                                                              value=value, decimals=decimals,
+                                                              feat_name=feat_name,
+                                                              treatment_name=treatment_name,
+                                                              output_name=output_name)
+            coef_array = coef_table.values
+            coef_headers = [i + '\n' +
+                            j for (i, j) in coef_table.columns] if d_t > 1 else coef_table.columns.tolist()
+            coef_stubs = [i + ' | ' + j for (i, j) in coef_table.index] if d_y > 1 else coef_table.index.tolist()
+            coef_title = 'Coefficient Results'
+            smry.add_table(coef_array, coef_headers, coef_stubs, coef_title)
+        except Exception as e:
+            print("Coefficient Results: ", str(e))
+        try:
+            intercept_table = self.intercept__inference().summary_frame(alpha=alpha,
+                                                                        value=value, decimals=decimals,
+                                                                        feat_name=None,
+                                                                        treatment_name=treatment_name,
+                                                                        output_name=output_name)
+            intercept_array = intercept_table.values
+            intercept_headers = [i + '\n' + j for (i, j)
+                                 in intercept_table.columns] if d_t > 1 else intercept_table.columns.tolist()
+            intercept_stubs = [i + ' | ' + j for (i, j)
+                               in intercept_table.index] if d_y > 1 else intercept_table.index.tolist()
+            intercept_title = 'CATE Intercept Results'
+            smry.add_table(intercept_array, intercept_headers, intercept_stubs, intercept_title)
+        except Exception as e:
+            print("CATE Intercept Results: ", str(e))
+        if len(smry.tables) > 0:
+            return smry
 
 
 class StatsModelsCateEstimatorMixin(LinearModelFinalCateEstimatorMixin):
@@ -614,6 +675,7 @@ class StatsModelsCateEstimatorMixin(LinearModelFinalCateEstimatorMixin):
         # add statsmodels to parent's options
         options = super()._get_inference_options()
         options.update(statsmodels=StatsModelsInference)
+        options.update(auto=StatsModelsInference)
         return options
 
 
@@ -624,7 +686,22 @@ class DebiasedLassoCateEstimatorMixin(LinearModelFinalCateEstimatorMixin):
         # add debiasedlasso to parent's options
         options = super()._get_inference_options()
         options.update(debiasedlasso=LinearModelFinalInference)
+        options.update(auto=LinearModelFinalInference)
         return options
+
+
+class ForestModelFinalCateEstimatorMixin(BaseCateEstimator):
+
+    def _get_inference_options(self):
+        # add blb to parent's options
+        options = super()._get_inference_options()
+        options.update(blb=GenericSingleTreatmentModelFinalInference)
+        options.update(auto=GenericSingleTreatmentModelFinalInference)
+        return options
+
+    @property
+    def feature_importances_(self):
+        return self.model_final.feature_importances_
 
 
 class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
@@ -635,6 +712,11 @@ class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
     Subclasses must expose a ``fitted_models_final`` attribute
     returning an array of the fitted models for each non-control treatment
     """
+
+    def _get_inference_options(self):
+        options = super()._get_inference_options()
+        options.update(auto=LinearModelFinalInferenceDiscrete)
+        return options
 
     def coef_(self, T):
         """ The coefficients in the linear model of the constant marginal treatment
@@ -670,10 +752,12 @@ class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
         -------
         intercept: float or (n_y,) array like
         """
+        if not self.fit_cate_intercept:
+            raise AttributeError("No intercept was fitted!")
         _, T = self._expand_treatments(None, T)
         ind = inverse_onehot(T).item() - 1
         assert ind >= 0, "No model was fitted for the control"
-        return self.fitted_models_final[ind].intercept_
+        return self.fitted_models_final[ind].intercept_.reshape(self._d_y)
 
     @BaseCateEstimator._defer_to_inference
     def coef__interval(self, T, *, alpha=0.1):
@@ -750,8 +834,7 @@ class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
         """
         pass
 
-    @BaseCateEstimator._defer_to_inference
-    def summary(self, T, *, alpha=0.1, value=0, decimals=3, feat_name=None):
+    def summary(self, T, *, alpha=0.1, value=0, decimals=3, feat_name=None, treatment_name=None, output_name=None):
         """ The summary of coefficient and intercept in the linear model of the constant marginal treatment
         effect associated with treatment T.
 
@@ -766,6 +849,10 @@ class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
             Number of decimal places to round each column to.
         feat_name: optional list of strings or None (default is None)
             The input of the feature names
+        treatment_name: optional list of strings or None (default is None)
+            The names of the treatments
+        output_name: optional list of strings or None (default is None)
+            The names of the outputs
 
         Returns
         -------
@@ -773,7 +860,43 @@ class LinearModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
             this holds the summary tables and text, which can be printed or
             converted to various output formats.
         """
-        pass
+        smry = Summary()
+        smry.add_extra_txt(["<sub>A linear parametric conditional average treatment effect (CATE) model was fitted:",
+                            "$Y = \\Theta(X)\\cdot T + g(X, W) + \\epsilon$",
+                            "where $T$ is the one-hot-encoding of the discrete treatment and "
+                            "for every outcome $i$ and treatment $j$ the CATE $\\Theta_{ij}(X)$ has the form:",
+                            "$\\Theta_{ij}(X) = \\phi(X)' coef_{ij} + cate\\_intercept_{ij}$",
+                            "where $\\phi(X)$ is the output of the `featurizer` or $X$ if `featurizer`=None. "
+                            "Coefficient Results table portrays the $coef_{ij}$ parameter vector for "
+                            "each outcome $i$ and the designated treatment $j$ passed to summary. "
+                            "Intercept Results table portrays the $cate\\_intercept_{ij}$ parameter.</sub>"])
+        try:
+            coef_table = self.coef__inference(T).summary_frame(
+                alpha=alpha, value=value, decimals=decimals, feat_name=feat_name,
+                treatment_name=treatment_name,
+                output_name=output_name)
+            coef_array = coef_table.values
+            coef_headers = coef_table.columns.tolist()
+            coef_stubs = coef_table.index.tolist()
+            coef_title = 'Coefficient Results'
+            smry.add_table(coef_array, coef_headers, coef_stubs, coef_title)
+        except Exception as e:
+            print("Coefficient Results: ", e)
+        try:
+            intercept_table = self.intercept__inference(T).summary_frame(
+                alpha=alpha, value=value, decimals=decimals, feat_name=None,
+                treatment_name=treatment_name,
+                output_name=output_name)
+            intercept_array = intercept_table.values
+            intercept_headers = intercept_table.columns.tolist()
+            intercept_stubs = intercept_table.index.tolist()
+            intercept_title = 'CATE Intercept Results'
+            smry.add_table(intercept_array, intercept_headers, intercept_stubs, intercept_title)
+        except Exception as e:
+            print("CATE Intercept Results: ", e)
+
+        if len(smry.tables) > 0:
+            return smry
 
 
 class StatsModelsCateEstimatorDiscreteMixin(LinearModelFinalCateEstimatorDiscreteMixin):
@@ -791,6 +914,7 @@ class StatsModelsCateEstimatorDiscreteMixin(LinearModelFinalCateEstimatorDiscret
         # add statsmodels to parent's options
         options = super()._get_inference_options()
         options.update(statsmodels=StatsModelsInferenceDiscrete)
+        options.update(auto=StatsModelsInferenceDiscrete)
         return options
 
 
@@ -801,4 +925,21 @@ class DebiasedLassoCateEstimatorDiscreteMixin(LinearModelFinalCateEstimatorDiscr
         # add statsmodels to parent's options
         options = super()._get_inference_options()
         options.update(debiasedlasso=LinearModelFinalInferenceDiscrete)
+        options.update(auto=LinearModelFinalInferenceDiscrete)
         return options
+
+
+class ForestModelFinalCateEstimatorDiscreteMixin(BaseCateEstimator):
+
+    def _get_inference_options(self):
+        # add blb to parent's options
+        options = super()._get_inference_options()
+        options.update(blb=GenericModelFinalInferenceDiscrete)
+        options.update(auto=GenericModelFinalInferenceDiscrete)
+        return options
+
+    def feature_importances_(self, T):
+        _, T = self._expand_treatments(None, T)
+        ind = inverse_onehot(T).item() - 1
+        assert ind >= 0, "No model was fitted for the control"
+        return self.fitted_models_final[ind].feature_importances_

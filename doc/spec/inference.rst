@@ -27,12 +27,12 @@ For instance:
 
 .. testcode::
 
-    from econml.dml import NonParamDMLCateEstimator
+    from econml.dml import NonParamDML
     from sklearn.ensemble import RandomForestRegressor
-    est = NonParamDMLCateEstimator(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
+    est = NonParamDML(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                 model_t=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                 model_final=RandomForestRegressor(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='bootstrap')
+    est.fit(y, t, X=X, W=W, inference='bootstrap')
     point = est.const_marginal_effect(X)
     lb, ub = est.const_marginal_effect_interval(X, alpha=0.05)
 
@@ -42,20 +42,19 @@ OLS Inference
 ====================
 
 For estimators where the final stage CATE estimate is based on an Ordinary Least Squares regression, then we offer
-normality-based confidence intervals by setting ``inference='statsmodels'`` or dependent on the estimator one can
-alter the covariance type calculation via
+normality-based confidence intervals by default (leaving the setting ``inference='auto'`` unchanged), or by
+explicitly setting ``inference='statsmodels'``, or dependent on the estimator one can alter the covariance type calculation via
 ``inference=StatsModelsInference(cov_type='HC1)`` or ``inference=StatsModelsInferenceDiscrete(cov_type='HC1)``.
 See :class:`.StatsModelsInference` and :class:`.StatsModelsInferenceDiscrete` for more details.
-This for instance holds for the :class:`.LinearDMLCateEstimator` and the
-:class:`.LinearDRLearner`, e.g.:
+This for instance holds for the :class:`.LinearDML` and the :class:`.LinearDRLearner`, e.g.:
 
 .. testcode::
 
-    from econml.dml import LinearDMLCateEstimator
+    from econml.dml import LinearDML
     from sklearn.ensemble import RandomForestRegressor
-    est = LinearDMLCateEstimator(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
+    est = LinearDML(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                  model_t=RandomForestRegressor(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='statsmodels')
+    est.fit(y, t, X=X, W=W)
     point = est.const_marginal_effect(X)
     lb, ub = est.const_marginal_effect_interval(X, alpha=0.05)
 
@@ -65,11 +64,11 @@ This for instance holds for the :class:`.LinearDMLCateEstimator` and the
     from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
     est = LinearDRLearner(model_regression=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                           model_propensity=RandomForestClassifier(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='statsmodels')
+    est.fit(y, t, X=X, W=W)
     point = est.effect(X)
     lb, ub = est.effect_interval(X, alpha=0.05)
 
-This inference are enabled by our :class:`.StatsModelsLinearRegression` extension to the scikit-learn 
+This inference is enabled by our :class:`.StatsModelsLinearRegression` extension to the scikit-learn 
 :class:`~sklearn.linear_model.LinearRegression`.
 
 Debiased Lasso Inference
@@ -77,16 +76,17 @@ Debiased Lasso Inference
 
 For estimators where the final stage CATE estimate is based on a high dimensional linear model with a sparsity
 constraint, then we offer confidence intervals using the debiased lasso technique. This for instance
-holds for the :class:`.SparseLinearDMLCateEstimator` and the :class:`.SparseLinearDRLearner`. You can enable such
-intervals by setting ``inference='debiasedlasso'``, e.g.:
+holds for the :class:`.SparseLinearDML` and the :class:`.SparseLinearDRLearner`. You can enable such
+intervals by default (leaving the setting ``inference='auto'`` unchanged), or by
+explicitly setting ``inference='debiasedlasso'``, e.g.:
 
 .. testcode::
 
-    from econml.dml import SparseLinearDMLCateEstimator
+    from econml.dml import SparseLinearDML
     from sklearn.ensemble import RandomForestRegressor
-    est = SparseLinearDMLCateEstimator(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
+    est = SparseLinearDML(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                        model_t=RandomForestRegressor(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='debiasedlasso')
+    est.fit(y, t, X=X, W=W)
     point = est.const_marginal_effect(X)
     lb, ub = est.const_marginal_effect_interval(X, alpha=0.05)
 
@@ -96,7 +96,7 @@ intervals by setting ``inference='debiasedlasso'``, e.g.:
     from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
     est = SparseLinearDRLearner(model_regression=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                 model_propensity=RandomForestClassifier(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='debiasedlasso')
+    est.fit(y, t, X=X, W=W)
     point = est.effect(X)
     lb, ub = est.effect_interval(X, alpha=0.05)
 
@@ -110,16 +110,17 @@ Subsampled Honest Forest Inference
 
 For estimators where the final stage CATE estimate is a non-parametric model based on a Random Forest, we offer
 confidence intervals via the bootstrap-of-little-bags approach (see [Athey2019]_) for estimating the uncertainty of
-an Honest Random Forest. This for instance holds for the :class:`.ForestDMLCateEstimator`
-and the :class:`.ForestDRLearner`. You can enable such intervals by setting ``inference='blb'``, e.g.:
+an Honest Random Forest. This for instance holds for the :class:`.ForestDML`
+and the :class:`.ForestDRLearner`. Such intervals are enabled by leaving inference at its default setting of ``'auto'``
+or by explicitly setting ``inference='blb'``, e.g.:
 
 .. testcode::
 
-    from econml.dml import ForestDMLCateEstimator
+    from econml.dml import ForestDML
     from sklearn.ensemble import RandomForestRegressor
-    est = ForestDMLCateEstimator(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
+    est = ForestDML(model_y=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                                  model_t=RandomForestRegressor(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='blb')
+    est.fit(y, t, X=X, W=W)
     point = est.const_marginal_effect(X)
     lb, ub = est.const_marginal_effect_interval(X, alpha=0.05)
 
@@ -129,7 +130,7 @@ and the :class:`.ForestDRLearner`. You can enable such intervals by setting ``in
     from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
     est = ForestDRLearner(model_regression=RandomForestRegressor(n_estimators=10, min_samples_leaf=10),
                           model_propensity=RandomForestClassifier(n_estimators=10, min_samples_leaf=10))
-    est.fit(y, t, X, W, inference='blb')
+    est.fit(y, t, X=X, W=W)
     point = est.effect(X)
     lb, ub = est.effect_interval(X, alpha=0.05)
 
@@ -142,8 +143,8 @@ OrthoForest Bootstrap of Little Bags Inference
 
 For the Orthogonal Random Forest estimators (see :class:`.ContinuousTreatmentOrthoForest`, :class:`.DiscreteTreatmentOrthoForest`), 
 we provide confidence intervals built via the bootstrap-of-little-bags approach ([Athey2019]_). This technique is well suited for
-estimating the uncertainty of the honest causal forests underlying the OrthoForest estimators. You can enable such intervals by setting
-``inference='blb'``, e.g.:
+estimating the uncertainty of the honest causal forests underlying the OrthoForest estimators. Such intervals are enabled by leaving 
+inference at its default setting of ``'auto'`` or by explicitly setting ``inference='blb'``, e.g.:
 
 .. testcode::
 
@@ -153,7 +154,7 @@ estimating the uncertainty of the honest causal forests underlying the OrthoFore
                                          min_leaf_size=3,
                                          model_T=WeightedLasso(alpha=0.01),
                                          model_Y=WeightedLasso(alpha=0.01))
-    est.fit(y, t, X, W, inference='blb')
+    est.fit(y, t, X=X, W=W)
     point = est.const_marginal_effect(X)
     lb, ub = est.const_marginal_effect_interval(X, alpha=0.05)
 

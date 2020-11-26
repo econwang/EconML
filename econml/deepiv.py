@@ -6,9 +6,11 @@
 import numpy as np
 import keras
 from .cate_estimator import BaseCateEstimator
+from .utilities import deprecated
 from keras import backend as K
 import keras.layers as L
 from keras.models import Model
+from econml.utilities import check_input_arrays, _deprecate_positional
 
 # TODO: make sure to use random seeds wherever necessary
 # TODO: make sure that the public API consistently uses "T" instead of "P" for the treatment
@@ -229,7 +231,7 @@ def response_loss_model(h, p, d_z, d_x, d_y, samples=1, use_upper_bound=False, g
     return Model([z, x, y], [expr])
 
 
-class DeepIVEstimator(BaseCateEstimator):
+class DeepIV(BaseCateEstimator):
     """
     The Deep IV Estimator (see http://proceedings.mlr.press/v70/hartford17a/hartford17a.pdf).
 
@@ -287,8 +289,10 @@ class DeepIVEstimator(BaseCateEstimator):
         self._second_stage_options = second_stage_options
         super().__init__()
 
+    @_deprecate_positional("X and Z should be passed by keyword only. In a future release "
+                           "we will disallow passing X and Z by position.", ['X', 'Z'])
     @BaseCateEstimator._wrap_fit
-    def fit(self, Y, T, X, Z, inference=None):
+    def fit(self, Y, T, X, Z, *, inference=None):
         """Estimate the counterfactual model from data.
 
         That is, estimate functions τ(·, ·, ·), ∂τ(·, ·).
@@ -312,6 +316,7 @@ class DeepIVEstimator(BaseCateEstimator):
         self
 
         """
+        Y, T, X, Z = check_input_arrays(Y, T, X, Z)
         assert 1 <= np.ndim(X) <= 2
         assert 1 <= np.ndim(Z) <= 2
         assert 1 <= np.ndim(T) <= 2
@@ -394,6 +399,7 @@ class DeepIVEstimator(BaseCateEstimator):
             Note that when Y is a vector rather than a 2-dimensional array, the corresponding
             singleton dimension will be collapsed (so this method will return a vector)
         """
+        X, T0, T1 = check_input_arrays(X, T0, T1)
         if np.ndim(T0) == 0:
             T0 = np.repeat(T0, 1 if X is None else np.shape(X)[0])
         if np.ndim(T1) == 0:
@@ -421,6 +427,7 @@ class DeepIVEstimator(BaseCateEstimator):
             the corresponding singleton dimensions in the output will be collapsed
             (e.g. if both are vectors, then the output of this method will also be a vector)
         """
+        T, X = check_input_arrays(T, X)
         # TODO: any way to get this to work on batches of arbitrary size?
         return self._marginal_effect_model.predict([T, X], batch_size=1).reshape((-1,) + self._d_y + self._d_t)
 
@@ -441,4 +448,11 @@ class DeepIVEstimator(BaseCateEstimator):
             Note that when Y is a vector rather than a 2-dimensional array, the corresponding
             singleton dimension will be collapsed (so this method will return a vector)
         """
+        T, X = check_input_arrays(T, X)
         return self._effect_model.predict([T, X]).reshape((-1,) + self._d_y)
+
+
+@deprecated("The DeepIVEstimator class has been renamed to DeepIV; "
+            "an upcoming release will remove support for the old name")
+class DeepIVEstimator(DeepIV):
+    pass

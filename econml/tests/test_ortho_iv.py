@@ -11,12 +11,12 @@ from sklearn.model_selection import KFold
 from econml.ortho_iv import (DMLATEIV, ProjectedDMLATEIV, DMLIV, NonParamDMLIV,
                              IntentToTreatDRIV, LinearIntentToTreatDRIV)
 import numpy as np
-from econml.utilities import shape, hstack, vstack, reshape, cross_product, StatsModelsLinearRegression
+from econml.utilities import shape, hstack, vstack, reshape, cross_product
 from econml.inference import BootstrapInference
 from contextlib import ExitStack
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, GradientBoostingClassifier
 import itertools
-from econml.sklearn_extensions.linear_model import WeightedLasso
+from econml.sklearn_extensions.linear_model import WeightedLasso, StatsModelsLinearRegression
 from econml.tests.test_statsmodels import _summarize
 import econml.tests.utilities  # bugfix for assertWarns
 
@@ -95,11 +95,7 @@ class TestOrthoIV(unittest.TestCase):
                                 model_t = LogisticRegression() if discrete_t else Lasso()
                                 model_z = LogisticRegression() if discrete_z else Lasso()
 
-                                # TODO: add stratification to bootstrap so that we can use it
-                                # even with discrete treatments
-                                all_infs = [None]
-                                if not (discrete_t or discrete_z):
-                                    all_infs.append(BootstrapInference(1))
+                                all_infs = [None, BootstrapInference(1)]
 
                                 estimators = [(DMLATEIV(model_Y_W=Lasso(),
                                                         model_T_W=model_t,
@@ -128,7 +124,7 @@ class TestOrthoIV(unittest.TestCase):
                                                                 flexible_model_effect=WeightedLasso(),
                                                                 n_splits=2),
                                         False,
-                                        all_infs + ['statsmodels']))
+                                        all_infs + ['auto']))
 
                                 for est, multi, infs in estimators:
                                     if not(multi) and d_y > 1 or d_t > 1 or d_z > 1:
@@ -297,7 +293,7 @@ class TestOrthoIV(unittest.TestCase):
         T = np.array([1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2])
         Z = np.array([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2])
         X = np.array([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]).reshape(-1, 1)
-        est.fit(Y, T, Z, X=X)
+        est.fit(Y, T, Z=Z, X=X)
         assert isinstance(est.original_featurizer, PolynomialFeatures)
         assert isinstance(est.featurizer, Pipeline)
         assert isinstance(est.model_final, StatsModelsLinearRegression)
@@ -310,7 +306,7 @@ class TestOrthoIV(unittest.TestCase):
 
         est = LinearIntentToTreatDRIV(LinearRegression(), LogisticRegression(C=1000), WeightedLasso(),
                                       featurizer=None)
-        est.fit(Y, T, Z, X=X)
+        est.fit(Y, T, Z=Z, X=X)
         assert est.original_featurizer is None
         assert isinstance(est.featurizer, FunctionTransformer)
         assert isinstance(est.model_final, StatsModelsLinearRegression)
@@ -325,9 +321,8 @@ class TestOrthoIV(unittest.TestCase):
         est = LinearIntentToTreatDRIV(LinearRegression(), LogisticRegression(C=1000), WeightedLasso())
         est.fit(np.array([1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2]),
                 np.array([1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2]),
-                np.array([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]),
-                X=np.array([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]).reshape(-1, 1),
-                inference='statsmodels')
+                Z=np.array([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]),
+                X=np.array([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]).reshape(-1, 1))
         interval = est.effect_interval(np.ones((9, 1)),
                                        T0=np.array([1, 1, 1, 2, 2, 2, 1, 1, 1]),
                                        T1=np.array([1, 2, 1, 1, 2, 2, 2, 2, 1]),

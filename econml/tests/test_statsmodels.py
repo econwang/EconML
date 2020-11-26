@@ -3,7 +3,7 @@
 
 import numpy as np
 import pytest
-from econml.dml import DMLCateEstimator, LinearDMLCateEstimator
+from econml.dml import DML, LinearDML
 from econml.inference import StatsModelsInference
 from econml.utilities import (ndim, transpose, shape, reshape, hstack, WeightedModelWrapper)
 from econml.sklearn_extensions.linear_model import WeightedLasso
@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.model_selection import KFold, StratifiedKFold
 import scipy.special
 import time
-from econml.utilities import StatsModelsLinearRegression as OLS
+from econml.sklearn_extensions.linear_model import StatsModelsLinearRegression as OLS
 import unittest
 import joblib
 from sklearn.preprocessing import PolynomialFeatures
@@ -611,7 +611,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half_sum), np.arange(first_half_sum, X.shape[0])),
                                         (np.arange(first_half_sum, X.shape[0]), np.arange(0, first_half_sum))]
 
-                        est = LinearDMLCateEstimator(
+                        est = LinearDML(
                             model_y=LinearRegression(),
                             model_t=LinearRegression(),
                             n_splits=SplitterSum(),
@@ -630,7 +630,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half), np.arange(first_half, X.shape[0])),
                                         (np.arange(first_half, X.shape[0]), np.arange(0, first_half))]
 
-                        lr = LinearDMLCateEstimator(
+                        lr = LinearDML(
                             model_y=LinearRegression(),
                             model_t=LinearRegression(),
                             n_splits=Splitter(),
@@ -685,7 +685,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half_sum), np.arange(first_half_sum, X.shape[0])),
                                         (np.arange(first_half_sum, X.shape[0]), np.arange(0, first_half_sum))]
 
-                        est = LinearDMLCateEstimator(
+                        est = LinearDML(
                             model_y=first_stage_model(),
                             model_t=first_stage_model(),
                             n_splits=SplitterSum(),
@@ -703,7 +703,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half), np.arange(first_half, X.shape[0])),
                                         (np.arange(first_half, X.shape[0]), np.arange(0, first_half))]
 
-                        lr = LinearDMLCateEstimator(
+                        lr = LinearDML(
                             model_y=first_stage_model(),
                             model_t=first_stage_model(),
                             n_splits=Splitter(),
@@ -758,7 +758,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half_sum), np.arange(first_half_sum, X.shape[0])),
                                         (np.arange(first_half_sum, X.shape[0]), np.arange(0, first_half_sum))]
 
-                        est = LinearDMLCateEstimator(
+                        est = LinearDML(
                             model_y=first_stage_model(),
                             model_t=first_stage_model(),
                             n_splits=SplitterSum(),
@@ -776,7 +776,7 @@ class TestStatsModels(unittest.TestCase):
                                 return [(np.arange(0, first_half), np.arange(first_half, X.shape[0])),
                                         (np.arange(first_half, X.shape[0]), np.arange(0, first_half))]
 
-                        lr = LinearDMLCateEstimator(
+                        lr = LinearDML(
                             model_y=first_stage_model(),
                             model_t=first_stage_model(),
                             n_splits=Splitter(),
@@ -788,7 +788,7 @@ class TestStatsModels(unittest.TestCase):
 
     def test_dml_multi_dim_treatment_outcome(self):
         """ Testing that the summarized and unsummarized version of DML gives the correct (known results). """
-        from econml.dml import LinearDMLCateEstimator
+        from econml.dml import LinearDML
         from econml.inference import StatsModelsInference
         np.random.seed(123)
         n = 100000
@@ -796,7 +796,7 @@ class TestStatsModels(unittest.TestCase):
         precision_int = .0001
         with np.printoptions(formatter={'float': '{:.4f}'.format}, suppress=True):
             for d in [2, 5]:  # n_feats + n_controls
-                for d_x in [2]:  # n_feats
+                for d_x in [1]:  # n_feats
                     for p in [1, 5]:  # n_outcomes
                         for q in [1, 5]:  # n_treatments
                             X = np.random.binomial(1, .5, size=(n, d))
@@ -807,10 +807,11 @@ class TestStatsModels(unittest.TestCase):
                             y = np.sum((true_effect(X, i) * T[:, [i]] for i in range(q)), axis=0) + X[:, [0] * p]
                             if p == 1:
                                 y = y.flatten()
-                            est = LinearDMLCateEstimator(model_y=LinearRegression(),
-                                                         model_t=LinearRegression(),
-                                                         linear_first_stages=False)
-                            est.fit(y, T, X[:, :d_x], X[:, d_x:], inference=StatsModelsInference(cov_type='nonrobust'))
+                            est = LinearDML(model_y=LinearRegression(),
+                                            model_t=LinearRegression(),
+                                            linear_first_stages=False)
+                            est.fit(y, T, X=X[:, :d_x], W=X[:, d_x:],
+                                    inference=StatsModelsInference(cov_type='nonrobust'))
                             intercept = est.intercept_.reshape((p, q))
                             lower_int, upper_int = est.intercept__interval(alpha=.001)
                             lower_int = lower_int.reshape((p, q))
@@ -834,12 +835,13 @@ class TestStatsModels(unittest.TestCase):
                                     np.testing.assert_array_less(np.zeros(lower[i, j, 1:].shape) - precision_int,
                                                                  upper[i, j, 1:])
 
-                            est = LinearDMLCateEstimator(model_y=LinearRegression(),
-                                                         model_t=LinearRegression(),
-                                                         linear_first_stages=False,
-                                                         featurizer=PolynomialFeatures(degree=1),
-                                                         fit_cate_intercept=False)
-                            est.fit(y, T, X[:, :d_x], X[:, d_x:], inference=StatsModelsInference(cov_type='nonrobust'))
+                            est = LinearDML(model_y=LinearRegression(),
+                                            model_t=LinearRegression(),
+                                            linear_first_stages=False,
+                                            featurizer=PolynomialFeatures(degree=1),
+                                            fit_cate_intercept=False)
+                            est.fit(y, T, X=X[:, :d_x], W=X[:, d_x:],
+                                    inference=StatsModelsInference(cov_type='nonrobust'))
                             with pytest.raises(AttributeError) as e_info:
                                 intercept = est.intercept_
                             with pytest.raises(AttributeError) as e_info:
@@ -881,7 +883,7 @@ class TestStatsModels(unittest.TestCase):
                                 def split(self, X, T):
                                     return [(np.arange(0, first_half_sum), np.arange(first_half_sum, X.shape[0])),
                                             (np.arange(first_half_sum, X.shape[0]), np.arange(0, first_half_sum))]
-                            est = LinearDMLCateEstimator(
+                            est = LinearDML(
                                 model_y=LinearRegression(),
                                 model_t=LinearRegression(),
                                 n_splits=SplitterSum(),

@@ -27,25 +27,24 @@ Tsiatis AA (2006).
 
 """
 
-import numpy as np
 from warnings import warn
 
+import numpy as np
 from sklearn.base import clone
-from sklearn.linear_model import LogisticRegressionCV, LinearRegression, LassoCV
-from econml.utilities import inverse_onehot, check_high_dimensional, StatsModelsLinearRegression
-from econml.sklearn_extensions.linear_model import WeightedLassoCVWrapper, DebiasedLasso
-from econml.sklearn_extensions.ensemble import SubsampledHonestForest
-from econml._ortho_learner import _OrthoLearner
-from econml.cate_estimator import StatsModelsCateEstimatorDiscreteMixin, DebiasedLassoCateEstimatorDiscreteMixin
-from econml.inference import GenericModelFinalInferenceDiscrete
+from sklearn.linear_model import (LassoCV, LinearRegression,
+                                  LogisticRegressionCV)
 
-
-def _filter_none_kwargs(**kwargs):
-    out_kwargs = {}
-    for key, value in kwargs.items():
-        if value is not None:
-            out_kwargs[key] = value
-    return out_kwargs
+from ._ortho_learner import _OrthoLearner
+from .cate_estimator import (DebiasedLassoCateEstimatorDiscreteMixin,
+                             ForestModelFinalCateEstimatorDiscreteMixin,
+                             StatsModelsCateEstimatorDiscreteMixin)
+from .inference import GenericModelFinalInferenceDiscrete
+from .sklearn_extensions.ensemble import SubsampledHonestForest
+from .sklearn_extensions.linear_model import (
+    DebiasedLasso, StatsModelsLinearRegression, WeightedLassoCVWrapper)
+from .utilities import (_deprecate_positional, check_high_dimensional,
+                        check_input_arrays, filter_none_kwargs,
+                        fit_with_groups, inverse_onehot)
 
 
 class _ModelNuisance:
@@ -57,7 +56,7 @@ class _ModelNuisance:
     def _combine(self, X, W):
         return np.hstack([arr for arr in [X, W] if arr is not None])
 
-    def fit(self, Y, T, X=None, W=None, *, sample_weight=None):
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, groups=None):
         if Y.ndim != 1 and (Y.ndim != 2 or Y.shape[1] != 1):
             raise ValueError("The outcome matrix must be of shape ({0}, ) or ({0}, 1), "
                              "instead got {1}.".format(len(X), Y.shape))
@@ -67,14 +66,15 @@ class _ModelNuisance:
             raise AttributeError("Provided crossfit folds contain training splits that " +
                                  "don't contain all treatments")
         XW = self._combine(X, W)
-        filtered_kwargs = _filter_none_kwargs(sample_weight=sample_weight)
-        self._model_propensity.fit(XW, inverse_onehot(T), **filtered_kwargs)
-        self._model_regression.fit(np.hstack([XW, T]), Y, **filtered_kwargs)
+        filtered_kwargs = filter_none_kwargs(sample_weight=sample_weight)
+
+        fit_with_groups(self._model_propensity, XW, inverse_onehot(T), groups=groups, **filtered_kwargs)
+        fit_with_groups(self._model_regression, np.hstack([XW, T]), Y, groups=groups, **filtered_kwargs)
         return self
 
-    def score(self, Y, T, X=None, W=None, *, sample_weight=None):
+    def score(self, Y, T, X=None, W=None, *, sample_weight=None, groups=None):
         XW = self._combine(X, W)
-        filtered_kwargs = _filter_none_kwargs(sample_weight=sample_weight)
+        filtered_kwargs = filter_none_kwargs(sample_weight=sample_weight)
 
         if hasattr(self._model_propensity, 'score'):
             propensity_score = self._model_propensity.score(XW, inverse_onehot(T), **filtered_kwargs)
@@ -87,7 +87,7 @@ class _ModelNuisance:
 
         return propensity_score, regression_score
 
-    def predict(self, Y, T, X=None, W=None, *, sample_weight=None):
+    def predict(self, Y, T, X=None, W=None, *, sample_weight=None, groups=None):
         XW = self._combine(X, W)
         propensities = np.maximum(self._model_propensity.predict_proba(XW), self._min_propensity)
         n = T.shape[0]
@@ -120,7 +120,7 @@ class _ModelFinal:
         self.d_y = Y_pred.shape[1:-1]  # track whether there's a Y dimension (must be a singleton)
         if (X is not None) and (self._featurizer is not None):
             X = self._featurizer.fit_transform(X)
-        filtered_kwargs = _filter_none_kwargs(sample_weight=sample_weight, sample_var=sample_var)
+        filtered_kwargs = filter_none_kwargs(sample_weight=sample_weight, sample_var=sample_var)
         if self._multitask_model_final:
             ys = Y_pred[..., 1:] - Y_pred[..., [0]]  # subtract control results from each other arm
             if self.d_y:  # need to squeeze out singleton so that we fit on 2D array
@@ -200,16 +200,18 @@ class DRLearner(_OrthoLearner):
 
     Parameters
     ----------
-    model_propensity : scikit-learn classifier
+    model_propensity : scikit-learn classifier or 'auto', optional (default='auto')
         Estimator for Pr[T=t | X, W]. Trained by regressing treatments on (features, controls) concatenated.
         Must implement `fit` and `predict_proba` methods. The `fit` method must be able to accept X and T,
         where T is a shape (n, ) array.
+        If 'auto', :class:`~sklearn.linear_model.LogisticRegressionCV` will be chosen.
 
-    model_regression : scikit-learn regressor
+    model_regression : scikit-learn regressor or 'auto', optional (default='auto')
         Estimator for E[Y | X, W, T]. Trained by regressing Y on (features, controls, one-hot-encoded treatments)
         concatenated. The one-hot-encoding excludes the baseline treatment. Must implement `fit` and
         `predict` methods. If different models per treatment arm are desired, see the
         :class:`.MultiModelWrapper` helper class.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     model_final :
         estimator for the final cate model. Trained on regressing the doubly robust potential outcomes
@@ -358,8 +360,8 @@ class DRLearner(_OrthoLearner):
 
     """
 
-    def __init__(self, model_propensity=LogisticRegressionCV(cv=3, solver='lbfgs', multi_class='auto'),
-                 model_regression=WeightedLassoCVWrapper(cv=3),
+    def __init__(self, model_propensity='auto',
+                 model_regression='auto',
                  model_final=StatsModelsLinearRegression(),
                  multitask_model_final=False,
                  featurizer=None,
@@ -367,6 +369,11 @@ class DRLearner(_OrthoLearner):
                  categories='auto',
                  n_splits=2,
                  random_state=None):
+        if model_propensity == 'auto':
+            model_propensity = LogisticRegressionCV(cv=3, solver='lbfgs', multi_class='auto',
+                                                    random_state=random_state)
+        if model_regression == 'auto':
+            model_regression = WeightedLassoCVWrapper(cv=3, random_state=random_state)
         self._multitask_model_final = multitask_model_final
         super().__init__(_ModelNuisance(model_propensity, model_regression, min_propensity),
                          _ModelFinal(model_final, featurizer, multitask_model_final),
@@ -375,7 +382,9 @@ class DRLearner(_OrthoLearner):
                          categories=categories,
                          random_state=random_state)
 
-    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference=None):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -393,6 +402,10 @@ class DRLearner(_OrthoLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, :class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of :class:`.BootstrapInference`).
@@ -402,7 +415,9 @@ class DRLearner(_OrthoLearner):
         self: DRLearner instance
         """
         # Replacing fit from _OrthoLearner, to enforce Z=None and improve the docstring
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
     def score(self, Y, T, X=None, W=None):
         """
@@ -549,8 +564,9 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
     Special case of the :class:`.DRLearner` where the final stage
     is a Linear Regression on a low dimensional set of features. In this case, inference
     can be performed via the asymptotic normal characterization of the estimated parameters.
-    This is computationally faster than bootstrap inference. Set ``inference='statsmodels'``
-    at fit time, to enable inference via asymptotic normality.
+    This is computationally faster than bootstrap inference. To do this, just leave the setting ``inference='auto'``
+    unchanged, or explicitly set ``inference='statsmodels'`` or alter the covariance type calculation via
+    ``inference=StatsModelsInferenceDiscrete(cov_type='HC1)``.
 
     More concretely, this estimator assumes that the final cate model for each treatment takes a linear form:
 
@@ -576,16 +592,18 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
 
     Parameters
     ----------
-    model_propensity : scikit-learn classifier
+    model_propensity : scikit-learn classifier or 'auto', optional (default='auto')
         Estimator for Pr[T=t | X, W]. Trained by regressing treatments on (features, controls) concatenated.
         Must implement `fit` and `predict_proba` methods. The `fit` method must be able to accept X and T,
         where T is a shape (n, ) array.
+        If 'auto', :class:`~sklearn.linear_model.LogisticRegressionCV` will be chosen.
 
-    model_regression : scikit-learn regressor
+    model_regression : scikit-learn regressor or 'auto', optional (default='auto')
         Estimator for E[Y | X, W, T]. Trained by regressing Y on (features, controls, one-hot-encoded treatments)
         concatenated. The one-hot-encoding excludes the baseline treatment. Must implement `fit` and
         `predict` methods. If different models per treatment arm are desired, see the
         :class:`.MultiModelWrapper` helper class.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     featurizer : :term:`transformer`, optional, default None
         Must support fit_transform and transform. Used to create composite features in the final CATE regression.
@@ -639,7 +657,7 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
         T = np.random.binomial(2, scipy.special.expit(X[:, 0]))
         y = (1 + .5*X[:, 0]) * T + X[:, 0] + np.random.normal(size=(1000,))
         est = LinearDRLearner()
-        est.fit(y, T, X=X, W=None, inference='statsmodels')
+        est.fit(y, T, X=X, W=None)
 
     >>> est.effect(X[:3])
     array([ 0.409743...,  0.312604..., -0.127394...])
@@ -669,8 +687,8 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
     """
 
     def __init__(self,
-                 model_propensity=LogisticRegressionCV(cv=3, solver='lbfgs', multi_class='auto'),
-                 model_regression=WeightedLassoCVWrapper(cv=3),
+                 model_propensity='auto',
+                 model_regression='auto',
                  featurizer=None,
                  fit_cate_intercept=True,
                  min_propensity=1e-6,
@@ -687,7 +705,9 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
                          n_splits=n_splits,
                          random_state=random_state)
 
-    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -705,6 +725,10 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, :class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports ``'bootstrap'``
             (or an instance of :class:`.BootstrapInference`) and ``'statsmodels'``
@@ -715,7 +739,9 @@ class LinearDRLearner(StatsModelsCateEstimatorDiscreteMixin, DRLearner):
         self: DRLearner instance
         """
         # Replacing fit from DRLearner, to add statsmodels inference in docstring
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=sample_var, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=sample_var, groups=groups,
+                           inference=inference)
 
     @property
     def multitask_model_cate(self):
@@ -737,8 +763,8 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
     Special case of the :class:`.DRLearner` where the final stage
     is a Debiased Lasso Regression. In this case, inference can be performed via the debiased lasso approach
     and its asymptotic normal characterization of the estimated parameters. This is computationally
-    faster than bootstrap inference. Set ``inference='debiasedlasso'`` at fit time, to enable inference
-    via asymptotic normality.
+    faster than bootstrap inference. Leave the default ``inference='auto'`` unchanged, or explicitly set
+    ``inference='debiasedlasso'`` at fit time to enable inference via asymptotic normality.
 
     More concretely, this estimator assumes that the final cate model for each treatment takes a linear form:
 
@@ -764,16 +790,18 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
 
     Parameters
     ----------
-    model_propensity : scikit-learn classifier
+    model_propensity : scikit-learn classifier or 'auto', optional (default='auto')
         Estimator for Pr[T=t | X, W]. Trained by regressing treatments on (features, controls) concatenated.
         Must implement `fit` and `predict_proba` methods. The `fit` method must be able to accept X and T,
         where T is a shape (n, ) array.
+        If 'auto', :class:`~sklearn.linear_model.LogisticRegressionCV` will be chosen.
 
-    model_regression : scikit-learn regressor
+    model_regression : scikit-learn regressor or 'auto', optional (default='auto')
         Estimator for E[Y | X, W, T]. Trained by regressing Y on (features, controls, one-hot-encoded treatments)
         concatenated. The one-hot-encoding excludes the baseline treatment. Must implement `fit` and
         `predict` methods. If different models per treatment arm are desired, see the
         :class:`.MultiModelWrapper` helper class.
+        If 'auto' :class:`.WeightedLassoCV`/:class:`.WeightedMultiTaskLassoCV` will be chosen.
 
     featurizer : :term:`transformer`, optional, default None
         Must support fit_transform and transform. Used to create composite features in the final CATE regression.
@@ -840,7 +868,7 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
         T = np.random.binomial(2, scipy.special.expit(X[:, 0]))
         y = (1 + .5*X[:, 0]) * T + X[:, 0] + np.random.normal(size=(1000,))
         est = SparseLinearDRLearner()
-        est.fit(y, T, X=X, W=None, inference='debiasedlasso')
+        est.fit(y, T, X=X, W=None)
 
     >>> est.effect(X[:3])
     array([ 0.418400...,  0.306400..., -0.130733...])
@@ -870,8 +898,8 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
     """
 
     def __init__(self,
-                 model_propensity=LogisticRegressionCV(cv=3, solver='lbfgs', multi_class='auto'),
-                 model_regression=WeightedLassoCVWrapper(cv=3),
+                 model_propensity='auto',
+                 model_regression='auto',
                  featurizer=None,
                  fit_cate_intercept=True,
                  alpha='auto',
@@ -896,7 +924,9 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
                          n_splits=n_splits,
                          random_state=random_state)
 
-    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates function :math:`\\theta(\\cdot)`.
 
@@ -914,6 +944,10 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
             Weights for each samples
         sample_var: optional(n,) vector or None (Default=None)
             Sample variance for each sample
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, :class:`.Inference` instance, or None
             Method for performing inference.  This estimator supports ``'bootstrap'``
             (or an instance of :class:`.BootstrapInference`) and ``'debiasedlasso'``
@@ -928,11 +962,14 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
         if sample_weight is not None and inference is not None:
             warn("This estimator does not yet support sample variances and inference does not take "
                  "sample variances into account. This feature will be supported in a future release.")
+        Y, T, X, W, sample_weight, sample_var = check_input_arrays(Y, T, X, W, sample_weight, sample_var)
         check_high_dimensional(X, T, threshold=5, featurizer=self.featurizer,
                                discrete_treatment=self._discrete_treatment,
                                msg="The number of features in the final model (< 5) is too small for a sparse model. "
                                "We recommend using the LinearDRLearner for this low-dimensional setting.")
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=None, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=None, groups=groups,
+                           inference=inference)
 
     @property
     def multitask_model_cate(self):
@@ -949,7 +986,7 @@ class SparseLinearDRLearner(DebiasedLassoCateEstimatorDiscreteMixin, DRLearner):
         return super().model_final.models_cate
 
 
-class ForestDRLearner(DRLearner):
+class ForestDRLearner(ForestModelFinalCateEstimatorDiscreteMixin, DRLearner):
     """ Instance of DRLearner with a :class:`~econml.sklearn_extensions.ensemble.SubsampledHonestForest`
     as a final model, so as to enable non-parametric inference.
 
@@ -1144,13 +1181,9 @@ class ForestDRLearner(DRLearner):
                          categories=categories,
                          n_splits=n_crossfit_splits, random_state=random_state)
 
-    def _get_inference_options(self):
-        # add statsmodels to parent's options
-        options = super()._get_inference_options()
-        options.update(blb=GenericModelFinalInferenceDiscrete)
-        return options
-
-    def fit(self, Y, T, X=None, W=None, sample_weight=None, sample_var=None, inference=None):
+    @_deprecate_positional("X and W should be passed by keyword only. In a future release "
+                           "we will disallow passing X and W by position.", ['X', 'W'])
+    def fit(self, Y, T, X=None, W=None, *, sample_weight=None, sample_var=None, groups=None, inference='auto'):
         """
         Estimate the counterfactual model from data, i.e. estimates functions τ(·,·,·), ∂τ(·,·).
 
@@ -1169,6 +1202,10 @@ class ForestDRLearner(DRLearner):
         sample_var: optional (n, n_y) vector
             Variance of sample, in case it corresponds to summary of many samples. Currently
             not in use by this method (as inference method does not require sample variance info).
+        groups: (n,) vector, optional
+            All rows corresponding to the same group will be kept together during splitting.
+            If groups is not None, the n_splits argument passed to this class's initializer
+            must support a 'groups' argument to its split method.
         inference: string, `Inference` instance, or None
             Method for performing inference.  This estimator supports 'bootstrap'
             (or an instance of :class:`.BootstrapInference`) and 'blb'
@@ -1178,7 +1215,9 @@ class ForestDRLearner(DRLearner):
         -------
         self
         """
-        return super().fit(Y, T, X=X, W=W, sample_weight=sample_weight, sample_var=None, inference=inference)
+        return super().fit(Y, T, X=X, W=W,
+                           sample_weight=sample_weight, sample_var=None, groups=groups,
+                           inference=inference)
 
     def multitask_model_cate(self):
         # Replacing to remove docstring
